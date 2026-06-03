@@ -7,11 +7,69 @@ set -euo pipefail
 # Suggestions:     suggest=true agents=<n1,n2,...> teams=<t1,t2,...> type=<type> project=<path> available_teams=<...>
 # Not joined:      not_joined=true available_teams=<t1,t2,...> (or "none")
 #
-# Usage: whoami.sh <project_path> <type>
+# Usage: whoami.sh <project_path> [type]
 #   type: claude-code, codex, gemini, antigravity, copilot
+#   If type is omitted, auto-detect from env vars and process tree.
 
-PROJECT_PATH="${1:?Usage: whoami.sh <project_path> <type>}"
-AGENT_TYPE="${2:?Usage: whoami.sh <project_path> <type>}"
+# Auto-detect CLI type from environment variables and process tree
+detect_cli_type() {
+  # 1. Check environment variables. Order matters: prefer the env vars that
+  # the runtime *itself* exports for its own session over the env vars users
+  # commonly set globally for unrelated reasons. CLAUDE_CODE_SESSION_ID and
+  # CODEX_SANDBOX / CODEX_THREAD_ID are set by their runtimes only. The
+  # GEMINI_API_KEY family is also routinely set by users of the Gemini API
+  # SDK without the Gemini CLI being involved, so it goes last.
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    echo "claude-code"
+    return 0
+  fi
+
+  if [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_THREAD_ID:-}" ]; then
+    echo "codex"
+    return 0
+  fi
+
+  if [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_GEMINI_CLI:-}" ]; then
+    echo "gemini"
+    return 0
+  fi
+
+  # 2. Fall back to process tree detection
+  local pid=$$
+  local max_depth=10
+  local depth=0
+
+  while [ $depth -lt $max_depth ] && [ "$pid" != "1" ] && [ -n "$pid" ]; do
+    # Get process name
+    local proc_name
+    proc_name=$(ps -p "$pid" -o comm= 2>/dev/null | xargs basename 2>/dev/null || true)
+
+    case "$proc_name" in
+      codex|codex-*)
+        echo "codex"
+        return 0
+        ;;
+      gemini|gemini-*)
+        echo "gemini"
+        return 0
+        ;;
+      claude|claude-code|claude-*)
+        echo "claude-code"
+        return 0
+        ;;
+    esac
+
+    # Move to parent process
+    pid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ' || true)
+    depth=$((depth + 1))
+  done
+
+  # Default fallback
+  echo "claude-code"
+}
+
+PROJECT_PATH="${1:?Usage: whoami.sh <project_path> [type]}"
+AGENT_TYPE="${2:-$(detect_cli_type)}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEAMS_DIR="$SCRIPT_DIR/../teams"
