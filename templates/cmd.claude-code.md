@@ -42,6 +42,7 @@ Four possible outputs:
   > - `/__SKILL_NAME__ mode <monitor|turn|both|off>` — switch delivery mode
   > - `/__SKILL_NAME__ actas <name>` — switch to another role in this project (creates if needed)
   > - `/__SKILL_NAME__ drop <name>` — remove a role from this project
+  > - `/__SKILL_NAME__ spawn <type> <name>` — launch a new agent in a tmux pane / terminal and have it actas <name>
 
   5. **REQUIRED — Do NOT skip this step.** Ask the user to pick a delivery mode using exactly this prompt:
 
@@ -142,6 +143,13 @@ If argument starts with "drop" followed by an agent name (e.g. "drop alice"):
       - description: `agmsg inbox stream`
       - persistent: true
 4. Tell the user: "Dropped role `<name>` from this project."
+
+If argument starts with "spawn" (e.g. "spawn codex reviewer", "spawn claude-code alice --window"):
+1. Parse `<type>` (must be `claude-code` or `codex`), `<name>`, and any options (`--project`, `--team`, `--window`, `--split h|v`, `--terminal`).
+2. Run: `~/.agents/skills/__SKILL_NAME__/scripts/spawn.sh <type> <name> --project "$(pwd)" [options]`
+   - spawn.sh pre-joins `<name>`, then opens a tmux pane/window (when this session is inside tmux) or a new OS terminal, and launches the target CLI with `/__SKILL_NAME__ actas <name>` as its initial prompt.
+   - It refuses early if `<name>` is already held by another live session, if the target CLI is not installed, or if there is no tmux and no usable terminal (headless).
+3. Show the script's output. Do NOT TaskStop or relaunch this session's own Monitor — spawn affects a separate, newly launched agent, not this session's subscription.
 
 If argument is "mode" (no further args):
 1. Run: `~/.agents/skills/__SKILL_NAME__/scripts/delivery.sh status claude-code "$(pwd)"`

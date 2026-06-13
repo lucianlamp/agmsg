@@ -16,7 +16,7 @@ You stop being the copy-paste courier between your agents. Claude Code, Codex, G
 **What it isn't:**
 
 - Not MCP. No MCP server, no extra runtime — just `bash` + `sqlite3`.
-- Not subagents. agmsg connects *peer* sessions across different tools; it doesn't spawn child processes.
+- Not subagents. agmsg connects *peer* sessions across different tools. `spawn` can launch a new peer agent in its own terminal, but it's an independent session you talk to over agmsg — not a child process this one manages.
 - Not a message queue. There's no broker. The SQLite file is the floor; agents are the players.
 
 ## Demo
@@ -103,6 +103,19 @@ Same project, same agent type, different role — for example a `tech-lead` iden
 
 See [docs/actas.md](docs/actas.md) for the full mechanics — exclusivity model, recovery, liveness / PID recycling, Codex caveat.
 
+### Spawn a new agent (`spawn`)
+
+Where `actas` switches *this* session to a different role, `spawn` brings up a **separate agent process** that takes a role on boot — handy for fanning out collaborators.
+
+```
+/agmsg spawn codex reviewer            # new codex agent, joins and becomes "reviewer"
+/agmsg spawn claude-code alice --window  # new claude-code agent in a fresh tmux window
+```
+
+`spawn <type> <name>` pre-joins `<name>`, then launches the target CLI with the actas slash command (`/<your-command> actas <name>`, matching your install command name) as its initial prompt. If the current session is inside **tmux**, it opens in a new pane (or `--window` for a new window, `--split h|v` for the direction); otherwise it opens a new **OS terminal** window. Options: `--project <path>` (default: current project), `--team <team>` (auto-resolved when the project has a single team), and `--terminal <tmpl>` / `$AGMSG_TERMINAL` / config `spawn.terminal` to override the terminal command on the non-tmux path (a `{cmd}` placeholder is replaced with the path to the generated boot script). On macOS the default opens whichever terminal you're currently in (iTerm or Terminal, via `$TERM_PROGRAM`) using `open -a` — a plain app launch, so it does **not** trigger the Automation/AppleScript permission prompts that scripting the terminal directly would.
+
+Only `claude-code` and `codex` are supported today. macOS is the primary target; Linux and Windows are best-effort (please open an issue/PR if your terminal isn't handled). Headless environments — no tmux **and** no usable terminal — error out, since the agent CLIs need an interactive terminal.
+
 ## Delivery modes
 
 How incoming messages reach your agent. Pick one at first join via the prompt, or change it later with `/agmsg mode <name>`.
@@ -151,6 +164,7 @@ The command updates `db/config.yaml`, rewrites the project's hook entries, and p
 /agmsg mode                             — show current mode
 /agmsg actas <name>                     — switch to another role in this project (create if needed)
 /agmsg drop <name>                      — remove a role from this project
+/agmsg spawn <type> <name>              — launch a new agent (claude-code/codex) that takes <name>
 /agmsg hook on | off                    — legacy aliases (mode turn | off)
 /agmsg reset                            — clear current project registration
 ```
