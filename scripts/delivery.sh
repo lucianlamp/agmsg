@@ -381,6 +381,8 @@ apply_settings() {
   mv "$tmp_state" "$hooks_file"
 }
 
+CODEX_MONITOR_DOC_URL="https://github.com/fujibee/agmsg/blob/main/docs/codex-monitor-beta.md"
+
 emit_monitor_directive() {
   local type="$1"
   local project="$2"
@@ -444,6 +446,31 @@ by this command.
 EOF
 }
 
+# Stop the Codex monitor bridge(s) for a project and remove their run artifacts.
+# Used by `set off codex` (and the manual counterpart to the not-yet-wired auto
+# teardown, #149). Leaves the shared app-server and the global shim alone — only
+# the per-identity bridge is project-scoped. Echoes how many were killed.
+stop_codex_bridge() {
+  local project="$1"
+  local pairs team name pidfile bpid killed=0
+  pairs=$("$SCRIPT_DIR/identities.sh" "$project" codex 2>/dev/null || true)
+  if [ -n "$pairs" ]; then
+    while IFS=$'\t' read -r team name _rest; do
+      [ -n "$team" ] && [ -n "$name" ] || continue
+      pidfile="$RUN_DIR/codex-bridge.$team.$name.pid"
+      [ -f "$pidfile" ] || continue
+      bpid=$(cat "$pidfile" 2>/dev/null || true)
+      if [ -n "$bpid" ] && kill -0 "$bpid" 2>/dev/null; then
+        kill "$bpid" 2>/dev/null && killed=$((killed + 1))
+      fi
+      rm -f "$pidfile" "${pidfile%.pid}.meta" "${pidfile%.pid}.log"
+    done <<EOF
+$pairs
+EOF
+  fi
+  echo "$killed"
+}
+
 do_set() {
   local MODE="${1:?Usage: delivery.sh set <mode> <type> <project_path>}"
   local TYPE="${2:?Missing type}"
@@ -452,6 +479,10 @@ do_set() {
   case "$MODE" in monitor|turn|both|off) ;; *)
     echo "Unknown mode: $MODE (use monitor|turn|both|off)" >&2; exit 1 ;;
   esac
+  if [ "$TYPE" = "codex" ] && [ "$MODE" = "both" ]; then
+    echo "Error: 'both' mode is not supported for codex bridge beta. Use 'monitor', 'turn', or 'off'." >&2
+    exit 1
+  fi
 
   apply_settings "$TYPE" "$PROJECT" "$MODE"
 
@@ -459,8 +490,47 @@ do_set() {
 
   case "$MODE" in
     monitor|both)
-      echo "Future sessions: SessionStart hook will auto-launch the watcher."
-      emit_monitor_directive "$TYPE" "$PROJECT"
+      if [ "$TYPE" = "codex" ]; then
+        if AGMSG_CODEX_SHIM_INSTALL_QUIET=1 "$SKILL_DIR/scripts/codex-shim-install.sh" install; then
+          echo "Codex monitor shim installed at ~/.agents/bin/codex."
+          case ":$PATH:" in
+            *":$HOME/.agents/bin:"*)
+              echo "Future Codex sessions: launch with codex. In monitor-mode projects, the agmsg shim routes interactive Codex sessions through the bridge."
+              ;;
+            *)
+              # Loud, unambiguous: this is the #1 reason monitor silently does nothing.
+              echo "WARNING: ~/.agents/bin is NOT on your PATH, so 'codex' still launches the real"
+              echo "  binary and the monitor bridge will NOT engage. Add this line, restart your shell,"
+              echo "  then launch with codex:"
+              echo "    export PATH=\"\$HOME/.agents/bin:\$PATH\""
+              ;;
+          esac
+        else
+          echo "Codex monitor mode is enabled, but the codex shim was not installed."
+          echo "Future Codex sessions: launch with $SKILL_DIR/scripts/codex-monitor.sh, or resolve the shim install issue above."
+        fi
+        # Node preflight: the bridge (codex-bridge.js) is a Node program, so
+        # without Node it silently never starts — flag it here at enable time.
+        # Presence only: the bridge uses old/stable APIs (the sole modern feature
+        # is one optional-chaining call, Node 14+), and any Node new enough to run
+        # Codex itself runs the bridge — so a version gate would be noise.
+        # AGMSG_CODEX_NODE overrides the binary the check looks for (also testable).
+        codex_node="${AGMSG_CODEX_NODE:-node}"
+        if ! command -v "$codex_node" >/dev/null 2>&1; then
+          echo "WARNING: Node.js ('$codex_node') was not found on PATH. The Codex bridge needs Node —"
+          echo "  monitor delivery will NOT start until Node is installed."
+        fi
+        # The bridge launches from the Codex SessionStart hook, which fires on the
+        # FIRST turn of a new session (not the moment Codex opens) — and an
+        # already-running session is not retrofitted (#151; launcher internals #153).
+        echo "Restart your Codex session (quit and relaunch \`codex\`), then send your first"
+        echo "  message — the bridge starts on your first turn, not the moment Codex opens."
+        echo "  Already-running sessions stay unmonitored until they restart."
+        echo "For more info: $CODEX_MONITOR_DOC_URL"
+      else
+        echo "Future sessions: SessionStart hook will auto-launch the watcher."
+        emit_monitor_directive "$TYPE" "$PROJECT"
+      fi
       ;;
     turn)
       echo "Future sessions: Stop hook will check inbox between turns."
@@ -470,7 +540,19 @@ do_set() {
       ;;
     off)
       echo "Future sessions: no automatic delivery."
-      kill_all_watchers "$PROJECT" >/dev/null 2>&1 || true
+      if [ "$TYPE" = "codex" ]; then
+        local stopped
+        stopped=$(stop_codex_bridge "$PROJECT")
+        if [ "${stopped:-0}" -gt 0 ]; then
+          echo "Stopped $stopped Codex bridge process(es) for this project and cleaned their run files."
+        fi
+        echo "Note: the codex shim (~/.agents/bin/codex) is shared across projects, so it was left in place."
+        echo "  If no other project uses monitor mode, remove it and restore your PATH:"
+        echo "    $SKILL_DIR/scripts/codex-shim-install.sh remove"
+        echo "    # then drop ~/.agents/bin from PATH if you added it for monitor"
+      else
+        kill_all_watchers "$PROJECT" >/dev/null 2>&1 || true
+      fi
       emit_stop_directive
       ;;
   esac

@@ -9,12 +9,22 @@ setup_test_env() {
   # (scripts/lib/) come along without enumerating files.
   cp -R "$BATS_TEST_DIRNAME"/../scripts/. "$TEST_SKILL_DIR/scripts/"
   chmod +x "$TEST_SKILL_DIR/scripts/"*.sh
+  chmod +x "$TEST_SKILL_DIR/scripts/"*.js 2>/dev/null || true
 
   # Initialize DB
   bash "$TEST_SKILL_DIR/scripts/init-db.sh"
 
   # Convenience vars
   export SCRIPTS="$TEST_SKILL_DIR/scripts"
+
+  # Sandbox HOME so NO test can touch the developer's real home. Several paths
+  # write under $HOME — e.g. codex-shim-install.sh creates $HOME/.agents/bin/codex
+  # and install.sh's configure_codex_sandbox edits $HOME/.codex/config.toml — and
+  # a leaked write would clobber the real install / shim (and dangle once this
+  # temp dir is torn down). bats runs each test in its own subshell, so the
+  # export is scoped to the test and needs no restore. See #41.
+  export HOME="$TEST_SKILL_DIR/home"
+  mkdir -p "$HOME"
 }
 
 teardown_test_env() {

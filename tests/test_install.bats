@@ -393,3 +393,67 @@ PS1
   [ "$output" = "$canonical" ]
   [[ "$output" != v9.9.9* ]]
 }
+
+# --- Codex sandbox writable_roots (#41) ---
+@test "install: configures Codex writable_roots for db teams and run" {
+  mkdir -p "$FAKE_HOME/.codex"
+  cat > "$FAKE_HOME/.codex/config.toml" <<'EOF'
+model = "gpt-test"
+EOF
+
+  HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd agmsg
+
+  grep -q "$SK/db" "$FAKE_HOME/.codex/config.toml"
+  grep -q "$SK/teams" "$FAKE_HOME/.codex/config.toml"
+  grep -q "$SK/run" "$FAKE_HOME/.codex/config.toml"
+}
+
+@test "install --update: adds missing Codex run writable_root for existing installs" {
+  mkdir -p "$FAKE_HOME/.codex"
+  cat > "$FAKE_HOME/.codex/config.toml" <<'EOF'
+[sandbox_workspace_write]
+writable_roots = []
+EOF
+
+  HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd agmsg
+  # Simulate an older install that had db/ and teams/ but not run/.
+  cat > "$FAKE_HOME/.codex/config.toml" <<EOF
+[sandbox_workspace_write]
+writable_roots = ["$SK/db", "$SK/teams"]
+EOF
+
+  HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --update
+
+  grep -q "$SK/run" "$FAKE_HOME/.codex/config.toml"
+}
+
+@test "install: fills an existing EMPTY Codex writable_roots without corrupting TOML" {
+  mkdir -p "$FAKE_HOME/.codex"
+  cat > "$FAKE_HOME/.codex/config.toml" <<'EOF'
+[sandbox_workspace_write]
+writable_roots = []
+EOF
+
+  HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd agmsg
+
+  # The empty-array path used to emit `[, "..."]` — a leading comma, which is
+  # invalid TOML and broke the user's Codex config.
+  ! grep -Eq '\[[[:space:]]*,' "$FAKE_HOME/.codex/config.toml"
+  grep -q "$SK/db" "$FAKE_HOME/.codex/config.toml"
+  grep -q "$SK/teams" "$FAKE_HOME/.codex/config.toml"
+  grep -q "$SK/run" "$FAKE_HOME/.codex/config.toml"
+
+  # Parse end-to-end when a TOML reader is available, to prove validity.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$FAKE_HOME/.codex/config.toml" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(0)
+with open(sys.argv[1], "rb") as f:
+    tomllib.load(f)
+PY
+  fi
+}
+

@@ -52,6 +52,63 @@ UPDATE_ONLY=false
 INTERACTIVE=true
 AGENT_TYPE=""  # claude-code, codex, gemini, antigravity — passed via --agent-type, or empty for auto/default
 
+configure_codex_sandbox() {
+  # --- Configure Codex sandbox (if Codex is installed) ---
+  # The Codex bridge (beta) writes pidfiles/sockets/request files under the
+  # skill's db/, teams/, run/ dirs; Codex's sandbox blocks those writes unless
+  # they are listed as writable_roots. See docs/codex-monitor-beta.md.
+  local code_config="$HOME/.codex/config.toml"
+  if [ ! -f "$code_config" ]; then
+    return 0
+  fi
+
+  local writable_paths=("$SKILL_DIR/db" "$SKILL_DIR/teams" "$SKILL_DIR/run")
+  local missing=()
+  local p
+  for p in "${writable_paths[@]}"; do
+    if ! grep -q "$p" "$code_config" 2>/dev/null; then
+      missing+=("$p")
+    fi
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo "  ~ Codex writable_roots already configured"
+    return 0
+  fi
+
+  cp "$code_config" "$code_config.bak"
+  echo "  ~ backed up $code_config → $code_config.bak"
+
+  local entries inserts
+  entries=$(printf ', "%s"' "${missing[@]}")
+  entries="${entries:2}"  # remove leading ", " — for the "create a new array" branches
+  inserts=$(printf '"%s", ' "${missing[@]}")  # trailing ", " — prepended inside an existing array
+
+  if grep -q 'writable_roots' "$code_config" 2>/dev/null; then
+    # Insert into the existing array right after its opening '['. This is
+    # uniformly valid TOML for empty ([]), single-line and multiline arrays —
+    # trailing commas are legal — and avoids the leading/double-comma corruption
+    # that munging the closing ']' produced for an empty array (`[, "x"]`).
+    awk -v ins="$inserts" '
+      !done && /writable_roots[[:space:]]*=[[:space:]]*\[/ {
+        sub(/\[/, "[" ins)
+        done=1
+      }
+      { print }
+    ' "$code_config" > "$code_config.tmp" && mv "$code_config.tmp" "$code_config"
+  elif grep -q '^\[sandbox_workspace_write\]' "$code_config" 2>/dev/null; then
+    # Section exists but no writable_roots
+    awk -v entries="$entries" '
+      { print }
+      /^\[sandbox_workspace_write\]/ { print "writable_roots = [" entries "]" }
+    ' "$code_config" > "$code_config.tmp" && mv "$code_config.tmp" "$code_config"
+  else
+    # No section at all
+    printf '\n[sandbox_workspace_write]\nwritable_roots = [%s]\n' "$entries" >> "$code_config"
+  fi
+  echo "  + added Codex writable_roots for db/, teams/, and run/"
+}
+
 is_windows_host() {
   if [ "${AGMSG_FORCE_WINDOWS:-}" = "1" ]; then
     return 0
@@ -224,6 +281,7 @@ if [ "$UPDATE_ONLY" = true ]; then
   printf '%s\n' "$INSTALLED_VERSION" > "$SKILL_DIR/VERSION"
   echo "  + updated scripts, templates, and SKILL.md (version $INSTALLED_VERSION)"
   echo "  ~ DB and team configs preserved"
+  configure_codex_sandbox
   echo ""
   echo "  ! Restart any running agent sessions to pick up the updated scripts."
   echo "    In-flight watch.sh processes keep the old code until they restart."
@@ -321,52 +379,13 @@ if [ -d "$HOME/.config/opencode" ]; then
   echo "  + installed \$$CMD_NAME skill to ~/.config/opencode/skills/"
 fi
 
-# --- Configure Codex sandbox (if Codex is installed) ---
-CODEX_CONFIG="$HOME/.codex/config.toml"
-if [ -f "$CODEX_CONFIG" ]; then
-  WRITABLE_PATHS=("$SKILL_DIR/db" "$SKILL_DIR/teams")
-  missing=()
-  for p in "${WRITABLE_PATHS[@]}"; do
-    if ! grep -q "$p" "$CODEX_CONFIG" 2>/dev/null; then
-      missing+=("$p")
-    fi
-  done
-
-  if [ ${#missing[@]} -eq 0 ]; then
-    echo "  ~ Codex writable_roots already configured"
-  else
-    cp "$CODEX_CONFIG" "$CODEX_CONFIG.bak"
-    echo "  ~ backed up $CODEX_CONFIG → $CODEX_CONFIG.bak"
-
-    # Build entries string: "path1", "path2"
-    entries=$(printf ', "%s"' "${missing[@]}")
-    entries="${entries:2}"  # remove leading ", "
-
-    if grep -q 'writable_roots' "$CODEX_CONFIG" 2>/dev/null; then
-      # Append to existing writable_roots (handles multiline arrays)
-      awk -v new_entries="$entries" '
-        /writable_roots/ { in_roots=1 }
-        in_roots && /\]/ {
-          sub(/\]/, ", " new_entries "]")
-          in_roots=0
-        }
-        { print }
-      ' "$CODEX_CONFIG" > "$CODEX_CONFIG.tmp" && mv "$CODEX_CONFIG.tmp" "$CODEX_CONFIG"
-    elif grep -q '^\[sandbox_workspace_write\]' "$CODEX_CONFIG" 2>/dev/null; then
-      # Section exists but no writable_roots
-      awk -v entries="$entries" '
-        { print }
-        /^\[sandbox_workspace_write\]/ { print "writable_roots = [" entries "]" }
-      ' "$CODEX_CONFIG" > "$CODEX_CONFIG.tmp" && mv "$CODEX_CONFIG.tmp" "$CODEX_CONFIG"
-    else
-      # No section at all
-      printf '\n[sandbox_workspace_write]\nwritable_roots = [%s]\n' "$entries" >> "$CODEX_CONFIG"
-    fi
-    echo "  + added Codex writable_roots for db/ and teams/"
-  fi
-fi
+# Codex sandbox writable_roots are configured by configure_codex_sandbox() at
+# the "Done" step below — the single source of truth for db/, teams/, and run/.
+# (A legacy inline copy used to run here too, which double-mutated the array and
+# produced invalid TOML on a fresh install; it has been removed.)
 
 # --- Done ---
+configure_codex_sandbox
 echo ""
 echo "  ✓ Installed to ~/.agents/skills/$CMD_NAME/ (version $INSTALLED_VERSION)"
 echo ""
