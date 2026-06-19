@@ -403,3 +403,50 @@ EOF
   [ "$output" = "1" ]
   [ ! -f "$(actas_lock_path zzteam 'a*')" ]
 }
+
+# --- stop_codex_bridge_for (despawn / delivery teardown helper) -------------
+
+@test "stop_codex_bridge_for: kills OUR live bridge and cleans artifacts" {
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name zzrole --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"
+  : > "$RUN_DIR/codex-bridge.zzteam.zzrole.meta"
+  : > "$RUN_DIR/codex-bridge.zzteam.zzrole.log"
+
+  run stop_codex_bridge_for zzteam zzrole
+  [ "$output" = "1" ]
+  ! kill -0 "$bpid" 2>/dev/null
+  [ ! -f "$RUN_DIR/codex-bridge.zzteam.zzrole.pid" ]
+  [ ! -f "$RUN_DIR/codex-bridge.zzteam.zzrole.meta" ]
+  [ ! -f "$RUN_DIR/codex-bridge.zzteam.zzrole.log" ]
+}
+
+@test "stop_codex_bridge_for: does NOT kill a recycled non-bridge pid, but cleans the pidfile" {
+  sleep 30 & other=$!
+  echo "$other" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"
+  run stop_codex_bridge_for zzteam zzrole
+  [ "$output" = "0" ]
+  kill -0 "$other" 2>/dev/null   # untouched
+  kill "$other" 2>/dev/null || true
+  [ ! -f "$RUN_DIR/codex-bridge.zzteam.zzrole.pid" ]
+}
+
+@test "stop_codex_bridge_for: does NOT kill a DIFFERENT-identity bridge, but cleans the mislabeled pidfile" {
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name OTHER --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"   # mislabeled
+  run stop_codex_bridge_for zzteam zzrole
+  [ "$output" = "0" ]
+  kill -0 "$bpid" 2>/dev/null   # the OTHER bridge survives
+  kill "$bpid" 2>/dev/null || true
+  [ ! -f "$RUN_DIR/codex-bridge.zzteam.zzrole.pid" ]
+}
+
+@test "stop_codex_bridge_for: no pidfile is a no-op" {
+  run stop_codex_bridge_for zzteam zzrole
+  [ "$output" = "0" ]
+}

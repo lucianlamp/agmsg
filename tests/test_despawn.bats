@@ -110,3 +110,91 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"no-live-lock"* ]]
 }
+
+@test "despawn: graceful — a spawned codex member is torn down directly (no watcher wait)" {
+  bash "$SCRIPTS/join.sh" team alice codex "$PROJ" >/dev/null
+  printf '%s\t%s\t%s\n' '@99' "$PROJ" codex > "$RUN/spawn.team__alice"
+  printf 'somesid\n' > "$RUN/actas.team__alice.session"
+  echo 999999 > "$RUN/codex-bridge.team.alice.pid"      # stale (dead pid)
+
+  run bash "$SCRIPTS/despawn.sh" team leader alice --timeout 3
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"codex-teardown"* ]]
+  [ ! -f "$RUN/codex-bridge.team.alice.pid" ]
+  [ ! -f "$RUN/actas.team__alice.session" ]
+  [ ! -f "$RUN/spawn.team__alice" ]
+  run bash "$SCRIPTS/identities.sh" "$PROJ" codex
+  [[ "$output" != *alice* ]]
+}
+
+@test "despawn: a stale codex pidfile does NOT divert a claude-code member off graceful (review)" {
+  bash "$SCRIPTS/join.sh" team alice claude-code "$PROJ" >/dev/null
+  printf '%s\t%s\t%s\n' '%99' "$PROJ" claude-code > "$RUN/spawn.team__alice"
+  echo 999999 > "$RUN/codex-bridge.team.alice.pid"      # stale codex pidfile, but member is claude-code
+
+  run bash "$SCRIPTS/despawn.sh" team leader alice
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"codex-teardown"* ]]                 # NOT the codex direct path
+}
+
+@test "despawn --force: also stops the codex monitor bridge" {
+  bash "$SCRIPTS/join.sh" team alice codex "$PROJ" >/dev/null
+  printf '%s\t%s\t%s\n' '@99' "$PROJ" codex > "$RUN/spawn.team__alice"
+  printf 'somesid\n' > "$RUN/actas.team__alice.session"
+  echo 999999 > "$RUN/codex-bridge.team.alice.pid"
+
+  run bash "$SCRIPTS/despawn.sh" team leader alice --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"status=forced"* ]]
+  [ ! -f "$RUN/codex-bridge.team.alice.pid" ]
+  [ ! -f "$RUN/spawn.team__alice" ]
+  [ ! -f "$RUN/actas.team__alice.session" ]
+}
+
+@test "despawn --force: stops a LIVE codex bridge (verified kill, not just pidfile cleanup)" {
+  # The prior test uses a dead pid, so it only proves pidfile cleanup. Here the
+  # bridge is a real live process whose argv matches team/alice — force must
+  # actually kill it.
+  bash "$SCRIPTS/join.sh" team alice codex "$PROJ" >/dev/null
+  printf '%s\t%s\t%s\n' '@99' "$PROJ" codex > "$RUN/spawn.team__alice"
+  printf 'somesid\n' > "$RUN/actas.team__alice.session"
+
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team team --name alice --thread tX &
+  local bpid=$!
+  echo "$bpid" > "$RUN/codex-bridge.team.alice.pid"
+
+  run bash "$SCRIPTS/despawn.sh" team leader alice --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"status=forced"* ]]
+  ! kill -0 "$bpid" 2>/dev/null                     # the live bridge was killed
+  [ ! -f "$RUN/codex-bridge.team.alice.pid" ]
+  [ ! -f "$RUN/spawn.team__alice" ]
+
+  kill "$bpid" 2>/dev/null || true; wait "$bpid" 2>/dev/null || true
+}
+
+@test "despawn --force: a claude-code member does NOT kill a same-name codex bridge (spawn-type gate)" {
+  # A claude-code 'alice' plus an unrelated, LIVE codex bridge that happens to
+  # share team/alice (a different codex session). Forcing the claude-code member
+  # must NOT tear that bridge down — the bridge teardown is gated on spawn type,
+  # not on the mere presence of a matching pidfile.
+  bash "$SCRIPTS/join.sh" team alice claude-code "$PROJ" >/dev/null
+  printf '%s\t%s\t%s\n' '%99' "$PROJ" claude-code > "$RUN/spawn.team__alice"
+  printf 'somesid\n' > "$RUN/actas.team__alice.session"
+
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team team --name alice --thread tX &
+  local bpid=$!
+  echo "$bpid" > "$RUN/codex-bridge.team.alice.pid"
+
+  run bash "$SCRIPTS/despawn.sh" team leader alice --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"status=forced"* ]]
+  kill -0 "$bpid" 2>/dev/null                       # the codex bridge survived
+  [ -f "$RUN/codex-bridge.team.alice.pid" ]         # its pidfile left intact
+
+  kill "$bpid" 2>/dev/null || true; wait "$bpid" 2>/dev/null || true
+}
