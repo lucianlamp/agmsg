@@ -112,7 +112,11 @@ If argument starts with "actas" followed by an agent name (e.g. "actas alice"):
 2. Run `~/.agents/skills/__SKILL_NAME__/scripts/identities.sh "$(pwd)" codex` to see whether the role is already registered for this (project, type).
 3. If the name does not appear in the output, join under the existing team. For a single team, run `~/.agents/skills/__SKILL_NAME__/scripts/join.sh <team> <name> codex "$(pwd)"`. For multiple teams, ask the user which team to join the new role into.
 4. Set the session's active FROM to `<name>` for every `send.sh` call until another `actas`.
-5. Tell the user: "Now acting as `<name>`. Sends will use `<name>` as the from agent. (Codex has no Monitor tool, so receive still covers all of your registered roles in this project.)"
+5. Bind this session's RECEIVE side to `<name>` too: run `~/.agents/skills/__SKILL_NAME__/scripts/codex-actas-engage.sh "$(pwd)" <name>` and read its `status=` line:
+   - `status=ok` → tell the user: "Now acting as `<name>` — both sends and receives use `<name>` on this session."
+   - `status=held ... owner_thread=<t>` → tell the user: "Sends now use `<name>`, but another live Codex session already receives as `<name>`, so this session keeps its current receive identity. Drop it there or pick a different name."
+   - `status=no_thread` or `status=no_app_server` → tell the user: "Now acting as `<name>` for sends. Receive binding needs a monitor-mode Codex session (launched via the agmsg `codex` shim / `AGMSG_CODEX_NAME=<name> codex`); without it, receive still covers all of your registered roles in this project."
+   - `status=not_registered` → re-run the join in step 3, then retry.
 
 If argument starts with "drop" followed by an agent name (e.g. "drop alice"):
 1. Parse the role name.
