@@ -16,8 +16,9 @@ approximates the same experience by launching Codex through an app-server bridge
 > moment Codex opens, so the bridge is absent until you interact once; an
 > already-running session stays unmonitored until you restart it (#151); the
 > bridge is not torn down when you close the TUI (orphans linger until reboot
-> or `mode off`/manual kill, see #149); and only one Codex identity per project
-> is supported (#150).
+> or `mode off`/manual kill, see #149). Running more than one Codex identity in
+> one project is supported — see
+> [Multiple Codex identities in one project](codex-per-identity.md) (#150).
 
 ## Quick Start
 
