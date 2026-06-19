@@ -27,6 +27,10 @@ TEAMS_DIR="$SCRIPT_DIR/../teams"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/validate.sh"
 agmsg_validate_team_name "$TEAM" || exit 1
+# Agent names also become path segments (run/codex-bridge.<team>.<agent>.{pid,meta})
+# and are matched out of process argv by the bridge self-heal, so they need the
+# same path-safety contract as team names (#140 follow-up).
+agmsg_validate_agent_name "$AGENT_ID" || exit 1
 
 # Resolve the session's real project root from the passed pwd (see #92), so an
 # agent-driven join from a subdir/worktree registers under the project the

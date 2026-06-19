@@ -15,6 +15,11 @@ source "$SCRIPT_DIR/lib/storage.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/validate.sh"
 agmsg_validate_team_name "$TEAM" || exit 1
+# Rename is a second entry point that writes an agent name into the registry
+# (and thence into bridge pidfile/meta paths + argv). Validate the NEW name with
+# the same contract as join.sh. The OLD name is intentionally NOT validated, so a
+# previously-registered invalid name can be rescued by renaming it to a valid one.
+agmsg_validate_agent_name "$NEW_NAME" || exit 1
 TEAMS_DIR="$SCRIPT_DIR/../teams"
 DB="$(agmsg_db_path)"
 TEAM_CONFIG="$TEAMS_DIR/$TEAM/config.json"

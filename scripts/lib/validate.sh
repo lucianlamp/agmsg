@@ -17,31 +17,46 @@
 _AGMSG_VALIDATE_SH=1
 
 # Return 0 if <name> is safe to use as a single path segment, else print a
-# specific error to stderr and return 1.
-agmsg_validate_team_name() {
-  local name="$1"
+# specific error (labelled with <kind>) to stderr and return 1.
+agmsg_validate_name_segment() {
+  local kind="$1" name="$2"
   if [ -z "$name" ]; then
-    echo "agmsg: invalid team name: must not be empty" >&2
+    echo "agmsg: invalid $kind name: must not be empty" >&2
     return 1
   fi
   case "$name" in
     .|..)
-      echo "agmsg: invalid team name '$name': '.' and '..' are not allowed" >&2
+      echo "agmsg: invalid $kind name '$name': '.' and '..' are not allowed" >&2
       return 1 ;;
     */*|*\\*)
-      echo "agmsg: invalid team name '$name': must not contain '/' or '\\' (path traversal)" >&2
+      echo "agmsg: invalid $kind name '$name': must not contain '/' or '\\' (path traversal)" >&2
       return 1 ;;
     -*)
       # Leading '-' would be parsed as an option by downstream tools.
-      echo "agmsg: invalid team name '$name': must not start with '-'" >&2
+      echo "agmsg: invalid $kind name '$name': must not start with '-'" >&2
+      return 1 ;;
+    *--*)
+      # A name carrying '--' (e.g. "foo --thread x", "x--name y") becomes
+      # indistinguishable from an option boundary once the name is flattened into
+      # a process argv string, which the codex bridge self-heal reads back to
+      # confirm a live receiver. Forbidding consecutive dashes keeps that readback
+      # unambiguous (single dashes, spaces, and arbitrary UTF-8 stay allowed).
+      echo "agmsg: invalid $kind name '$name': must not contain '--'" >&2
       return 1 ;;
   esac
   # Reject control characters (NUL can't reach a shell var, but newline / tab /
   # other C0 + DEL can corrupt paths, configs, and row-counting output).
   case "$name" in
     *[[:cntrl:]]*)
-      echo "agmsg: invalid team name: must not contain control characters" >&2
+      echo "agmsg: invalid $kind name: must not contain control characters" >&2
       return 1 ;;
   esac
   return 0
 }
+
+# Team and agent names both become path segments — team/<team>/config.json and
+# run/codex-bridge.<team>.<agent>.{pid,meta} — so both need the same path-safety
+# checks. Spaces and arbitrary UTF-8 stay allowed (Japanese names exist in the
+# wild); only path-dangerous constructs are denied.
+agmsg_validate_team_name()  { agmsg_validate_name_segment team "$1"; }
+agmsg_validate_agent_name() { agmsg_validate_name_segment agent "$1"; }

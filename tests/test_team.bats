@@ -347,3 +347,42 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -f "$TEST_SKILL_DIR/teams/テストチーム/config.json" ]
 }
+
+# --- agent-name path safety (review #4 follow-up) ---
+
+@test "join: rejects an agent name with path traversal (/)" {
+  run bash "$SCRIPTS/join.sh" myteam "foo/bar" codex /tmp/proj
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "path traversal" ]]
+}
+
+@test "join: rejects an agent name starting with '-'" {
+  run bash "$SCRIPTS/join.sh" myteam "-x" codex /tmp/proj
+  [ "$status" -eq 1 ]
+}
+
+@test "join: still accepts an agent name with spaces (UTF-8/space contract)" {
+  run bash "$SCRIPTS/join.sh" myteam "foo bar" codex /tmp/proj
+  [ "$status" -eq 0 ]
+}
+
+@test "join: rejects a name containing '--' (argv-ambiguity contract)" {
+  run bash "$SCRIPTS/join.sh" myteam "foo --thread x" codex /tmp/proj
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "--" ]]
+  run bash "$SCRIPTS/join.sh" "team--x" alice codex /tmp/proj
+  [ "$status" -eq 1 ]
+}
+
+@test "rename: rejects a new agent name with '--', '/', or leading '-'" {
+  bash "$SCRIPTS/join.sh" myteam alice codex /tmp/proj
+  run bash "$SCRIPTS/rename.sh" myteam alice "foo --thread x"
+  [ "$status" -eq 1 ]
+  run bash "$SCRIPTS/rename.sh" myteam alice "foo/bar"
+  [ "$status" -eq 1 ]
+  run bash "$SCRIPTS/rename.sh" myteam alice "-x"
+  [ "$status" -eq 1 ]
+  # original name untouched
+  run bash "$SCRIPTS/team.sh" myteam
+  [[ "$output" == *"alice"* ]]
+}
