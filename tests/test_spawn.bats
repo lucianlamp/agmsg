@@ -268,3 +268,57 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"skipping readiness wait"* ]]
 }
+
+# --- tmux pane identity (#@team-name / @actas-name on the pane border) ---
+#
+# spawn sets PANE-scoped @team-name/@actas-name on the spawned pane so the
+# pane-border-format can show "<team> / <name>". These use a recording tmux stub
+# (the suite otherwise unsets TMUX) and --no-wait so no real watcher is needed.
+
+@test "spawn (pane): sets @team-name/@actas-name as pane options on the split pane" {
+  bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
+  local cap="$TEST_SKILL_DIR/tmux-capture.txt"
+  cat > "$STUB_BIN/tmux" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$cap"
+case "\$1" in
+  new-window)      echo '@5' ;;
+  split-window)    echo '%5' ;;
+  display-message) echo '%5' ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB_BIN/tmux"
+
+  run env TMUX="/tmp/fake,1,0" bash "$SCRIPTS/spawn.sh" claude-code alice \
+    --project "$PROJ" --no-wait
+  [ "$status" -eq 0 ]
+  # pane-scoped (-p) on the spawned pane %5, so a split never leaks onto the
+  # leader's sibling pane.
+  grep -q 'set-option -p -t %5 @team-name myteam' "$cap"
+  grep -q 'set-option -p -t %5 @actas-name alice' "$cap"
+}
+
+@test "spawn --window: sets the pane options on the new window's resolved pane" {
+  bash "$SCRIPTS/join.sh" myteam existing claude-code "$PROJ"
+  local cap="$TEST_SKILL_DIR/tmux-capture.txt"
+  cat > "$STUB_BIN/tmux" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$cap"
+case "\$1" in
+  new-window)      echo '@7' ;;
+  split-window)    echo '%9' ;;
+  display-message) echo '%7' ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB_BIN/tmux"
+
+  run env TMUX="/tmp/fake,1,0" bash "$SCRIPTS/spawn.sh" claude-code bob \
+    --project "$PROJ" --window --no-wait
+  [ "$status" -eq 0 ]
+  # window_id @7 is the placement record; identity is set on its pane %7,
+  # resolved via display-message (the window path has no pane id of its own).
+  grep -q 'set-option -p -t %7 @team-name myteam' "$cap"
+  grep -q 'set-option -p -t %7 @actas-name bob' "$cap"
+}
