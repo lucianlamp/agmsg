@@ -132,6 +132,9 @@ EOF
   # Routes back through Git Bash into the extensionless bash shim.
   grep -q 'AGMSG_CMD_BASH' "$HOME/.agents/bin/codex.cmd"
   grep -qF "$HOME/.agents/bin/codex" "$HOME/.agents/bin/codex.cmd"
+  # Disarms a user .bash_profile winpty self-wrap that would otherwise hijack the
+  # login shell into an interactive prompt instead of running the shim.
+  grep -q 'WINPTY_SPAWNED' "$HOME/.agents/bin/codex.cmd"
 
   # `remove` takes the wrapper with it (only the agmsg-generated one).
   bash "$SCRIPTS/codex-shim-install.sh" remove >/dev/null 2>&1
