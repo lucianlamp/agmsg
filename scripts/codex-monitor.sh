@@ -67,16 +67,44 @@ esac
 
 PROJECT="$(cd "$PROJECT" && pwd)"
 PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
-[ -n "$SOCKET_PATH" ] || SOCKET_PATH="$RUN_DIR/codex-app-server.$PROJECT_HASH.sock"
+# Per-identity app-server. A project-wide server is shared across every codex
+# session in the project, and it fires SessionStart hooks from the environment
+# of whichever session launched it FIRST — so a later session's chosen identity
+# (AGMSG_CODEX_NAME) never reaches the hook, and the bridge cannot tell the
+# sessions apart. When a session names itself at launch
+# (`AGMSG_CODEX_NAME=kimura codex`), give it its own server keyed by that name:
+# this session launches it, so the hooks it fires inherit this session's
+# identity. Unset → the project-wide socket as before (single-identity
+# back-compat; no extra server processes for the common case).
+SERVER_KEY="$PROJECT_HASH"
+if [ -n "${AGMSG_CODEX_NAME:-}" ]; then
+  # Per-identity socket. Keep the path under the unix-domain SUN_LEN limit
+  # (~104 bytes on macOS): the full 40-char project hash + ".<identity>" overflows
+  # it, so use a 12-char project prefix (48 bits — ample to separate projects)
+  # plus a sanitized, length-capped identity. session-start.sh and
+  # codex-bridge-launcher.sh derive the same key back from the socket filename,
+  # so request-file routing stays consistent.
+  _id=$(printf '%s' "$AGMSG_CODEX_NAME" | tr -c 'A-Za-z0-9._-' '_')
+  SERVER_KEY="${PROJECT_HASH:0:12}.${_id:0:24}"
+fi
+[ -n "$SOCKET_PATH" ] || SOCKET_PATH="$RUN_DIR/codex-app-server.$SERVER_KEY.sock"
 case "$SOCKET_PATH" in
   /*) ;;
   *) SOCKET_PATH="$PROJECT/$SOCKET_PATH" ;;
 esac
 SOCKET_URL="unix://$SOCKET_PATH"
-SERVER_LOG="$RUN_DIR/codex-app-server.$PROJECT_HASH.log"
-SERVER_PID="$RUN_DIR/codex-app-server.$PROJECT_HASH.pid"
+SERVER_LOG="$RUN_DIR/codex-app-server.$SERVER_KEY.log"
+SERVER_PID="$RUN_DIR/codex-app-server.$SERVER_KEY.pid"
 
 mkdir -p "$RUN_DIR" "$(dirname "$SOCKET_PATH")"
+
+# Export the bridge environment BEFORE the app-server is launched below: the
+# app-server is the parent of the SessionStart hooks, so the hooks only inherit
+# AGMSG_CODEX_BRIDGE_LAUNCHER / _APP_SERVER (and, on a per-identity server,
+# AGMSG_CODEX_NAME) when they are already exported at launch time.
+export AGMSG_CODEX_BRIDGE=1
+export AGMSG_CODEX_BRIDGE_APP_SERVER="$SOCKET_URL"
+export AGMSG_CODEX_BRIDGE_LAUNCHER=1
 
 if [ ! -S "$SOCKET_PATH" ]; then
   "$REAL_CODEX" app-server --listen "$SOCKET_URL" >>"$SERVER_LOG" 2>&1 &
@@ -94,10 +122,6 @@ if [ ! -S "$SOCKET_PATH" ]; then
 fi
 
 "$SCRIPT_DIR/delivery.sh" set monitor codex "$PROJECT" >/dev/null
-
-export AGMSG_CODEX_BRIDGE=1
-export AGMSG_CODEX_BRIDGE_APP_SERVER="$SOCKET_URL"
-export AGMSG_CODEX_BRIDGE_LAUNCHER=1
 
 launcher_cmd="${AGMSG_CODEX_BRIDGE_LAUNCHER_CMD:-$SCRIPT_DIR/codex-bridge-launcher.sh}"
 "$launcher_cmd" codex "$PROJECT" "$SOCKET_URL" "$$" >/dev/null 2>&1 &

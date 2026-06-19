@@ -144,7 +144,14 @@ if [ "$TYPE" = "codex" ]; then
   [ -n "$team" ] && [ -n "$name" ] || exit 0
 
   if [ "${AGMSG_CODEX_BRIDGE_LAUNCHER:-}" = "1" ]; then
-    request_file="$RUN_DIR/codex-bridge-request.$project_hash"
+    # Key the request by the (per-identity) app-server socket, not just the
+    # project: two sessions in one project run two servers + two launchers, and a
+    # project-wide request file would let them clobber / cross-read each other.
+    # The shared single-identity socket's key IS the project hash, so unchanged
+    # there.
+    server_key="${app_server##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+    [ -n "$server_key" ] || server_key="$project_hash"
+    request_file="$RUN_DIR/codex-bridge-request.$server_key"
     tmp_request="$request_file.$$"
     mkdir -p "$RUN_DIR" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\t%s\n' \

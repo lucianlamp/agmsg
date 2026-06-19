@@ -15,7 +15,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_DIR="$SKILL_DIR/run"
 PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
-REQUEST_FILE="$RUN_DIR/codex-bridge-request.$PROJECT_HASH"
+# Key the request file by the app-server socket so a per-identity server has its
+# own launcher inbox; the shared single-identity socket's key is the project
+# hash, so this is unchanged for the common case. Must match the writer key in
+# session-start.sh.
+server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+[ -n "$server_key" ] || server_key="$PROJECT_HASH"
+REQUEST_FILE="$RUN_DIR/codex-bridge-request.$server_key"
 
 mkdir -p "$RUN_DIR"
 

@@ -24,8 +24,11 @@ teardown() { teardown_test_env; }
 # Run session-start.sh on the codex launcher path with a forced thread + socket.
 # Extra "KEY=VAL" args are exported for the invocation (e.g. AGMSG_CODEX_NAME).
 run_session_start() {
+  # Socket follows the real `codex-app-server.<server_key>.sock` convention so the
+  # request file lands at codex-bridge-request.<server_key>; with the shared
+  # (no-identity) socket the key is the project hash, matching $REQUEST_FILE.
   AGMSG_CODEX_BRIDGE_LAUNCHER=1 \
-  AGMSG_CODEX_BRIDGE_APP_SERVER="unix:///tmp/fake-codex.sock" \
+  AGMSG_CODEX_BRIDGE_APP_SERVER="unix://$TEST_SKILL_DIR/run/codex-app-server.$PROJECT_HASH.sock" \
   CODEX_THREAD_ID="$THREAD" \
   env "$@" bash "$SCRIPTS/session-start.sh" codex "$PROJECT" </dev/null
 }
@@ -90,4 +93,30 @@ request_name() { awk -F'\t' '{print $3}' "$REQUEST_FILE"; }
 
   run_session_start
   [ "$(request_name)" = "kimura" ]
+}
+
+@test "per-identity servers write to separate request files (no collision)" {
+  bash "$SCRIPTS/join.sh" dev kimura codex "$PROJECT"
+  bash "$SCRIPTS/join.sh" dev goro   codex "$PROJECT"
+
+  # Each session runs its OWN per-identity app-server, so the request file is
+  # keyed by the socket — two sessions in one project must not clobber each other.
+  one_session() { # <name> <socket-key> <thread>
+    AGMSG_CODEX_BRIDGE_LAUNCHER=1 \
+    AGMSG_CODEX_BRIDGE_APP_SERVER="unix://$TEST_SKILL_DIR/run/codex-app-server.$2.sock" \
+    CODEX_THREAD_ID="$3" \
+    env AGMSG_CODEX_NAME="$1" bash "$SCRIPTS/session-start.sh" codex "$PROJECT" </dev/null
+  }
+  one_session kimura "$PROJECT_HASH.kimura" thread-k
+  one_session goro   "$PROJECT_HASH.goro"   thread-g
+
+  rk="$RUN_DIR/codex-bridge-request.$PROJECT_HASH.kimura"
+  rg="$RUN_DIR/codex-bridge-request.$PROJECT_HASH.goro"
+  [ -f "$rk" ]
+  [ -f "$rg" ]
+  [ "$(awk -F'\t' '{print $3}' "$rk")" = "kimura" ]
+  [ "$(awk -F'\t' '{print $3}' "$rg")" = "goro" ]
+  # And the threads stayed with their identity (4th column).
+  [ "$(awk -F'\t' '{print $4}' "$rk")" = "thread-k" ]
+  [ "$(awk -F'\t' '{print $4}' "$rg")" = "thread-g" ]
 }
