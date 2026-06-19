@@ -119,9 +119,9 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
         run: bats --print-output-on-failure tests/
 
-  # Windows coverage for the native helpers shipped in #103 (PowerShell wrapper,
-  # Git Bash runner, sqlite3 compatibility shim, cygpath normalization). The
-  # POSIX-assuming suite is not fully green on Windows yet, so this is staged
+  # Windows coverage for the native helpers shipped in #103 (Git Bash runner,
+  # sqlite3 compatibility shim, cygpath normalization). The POSIX-assuming suite
+  # is not fully green on Windows yet, so this is staged
   # (#125): a focused leg targeting the Windows-relevant tests, plus a full leg
   # that is informational only (continue-on-error) to track how far the rest
   # gets. Neither is a required check yet — promote the focused leg to required
@@ -146,9 +146,8 @@ jobs:
           # Focused leg: the install-side native Windows helpers (#103). These
           # are green on windows-latest today and are the candidate to promote
           # to a required check. Other Windows-relevant tests (delivery hook
-          # JSON, the PowerShell runner smoke) currently fail on the #143/#138
-          # "malformed JSON" bug and are tracked by the full leg below until
-          # that is fixed in a separate PR.
+          # JSON) currently fail on the #143/#138 "malformed JSON" bug and are
+          # tracked by the full leg below until that is fixed in a separate PR.
           - leg: install helpers
             filter: "[Ww]indows"
             target: tests/test_install.bats

@@ -191,14 +191,15 @@ wait_for_pidfile_pid() {
   grep -q "whoami.sh \"\$(pwd)\" opencode" "$FAKE_HOME/.config/opencode/skills/agmsg/SKILL.md"
 }
 
-@test "install: Windows PowerShell launcher stays under the skill tree" {
+@test "install: no PowerShell launcher is shipped (dispatcher only)" {
   AGMSG_FORCE_WINDOWS=1 HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd msg
 
   [ ! -f "$FAKE_HOME/.agents/msg.ps1" ]
   [ ! -f "$FAKE_HOME/.agents/msg-run.sh" ]
   [ ! -f "$FAKE_HOME/.agents/bin/sqlite3" ]
-  [ -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/agmsg.ps1" ]
-  [ -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/install-agmsg.ps1" ]
+  # The PowerShell port was removed; only the Bash dispatcher ships.
+  [ ! -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/agmsg.ps1" ]
+  [ ! -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/install-agmsg.ps1" ]
   [ -f "$FAKE_HOME/.agents/skills/msg/scripts/dispatch.sh" ]
 }
 
@@ -232,8 +233,8 @@ PS1
 @test "install: Windows dispatcher is shipped with the skill scripts" {
   AGMSG_FORCE_WINDOWS=1 HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd agmsg
 
-  [ -f "$SK/scripts/windows/agmsg.ps1" ]
-  [ -f "$SK/scripts/windows/install-agmsg.ps1" ]
+  [ ! -f "$SK/scripts/windows/agmsg.ps1" ]
+  [ ! -f "$SK/scripts/windows/install-agmsg.ps1" ]
   [ -f "$SK/scripts/dispatch.sh" ]
   [ ! -f "$SK/scripts/windows/agmsg-run.sh" ]
   [ ! -f "$SK/scripts/windows/sqlite3-shim.sh" ]
