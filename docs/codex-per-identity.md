@@ -9,49 +9,62 @@ sessions in that project and have each one **receive only its own mail** —
 `kimura`-addressed messages reach the `kimura` session, `goro`-addressed messages
 reach the `goro` session.
 
-There are two ways to tell a session which identity it receives as. The bridge
-only engages on your **first turn** either way (the SessionStart hook fires on
-your first message, not the moment Codex opens), so making that first message
-`$agmsg actas <name>` is usually all you need — one step does both jobs.
+There are two ways to tell a session which identity it receives as. Which one to
+reach for depends on **how many Codex sessions you run in the project at once**:
 
-## 1. In-session — `$agmsg actas <name>` (recommended)
+- **Several at once** → launch each with `AGMSG_CODEX_NAME=<name> codex`. Each
+  gets its own app-server, so the per-session bridge hand-off is isolated and
+  simultaneous launches don't race.
+- **A single session, or switching identity in-session** → just send
+  `$agmsg actas <name>`. One step binds both send and receive on the project's
+  shared app-server.
 
-Launch a normal `codex`, then make your first message the actas command (or send
-it any time to switch identity without relaunching):
+The bridge engages on your **first turn** either way (the SessionStart hook fires
+on your first message, not the moment Codex opens).
+
+## Running several at once — `AGMSG_CODEX_NAME`
+
+Name each session in its launch line:
+
+```bash
+AGMSG_CODEX_NAME=kimura codex     # receives kimura's mail
+AGMSG_CODEX_NAME=goro   codex     # a second session, receives goro's mail
+```
+
+Each named session gets its **own** app-server (keyed by the name), so the
+SessionStart hook it fires inherits the identity and arms the bridge — and the
+request hand-off to the out-of-sandbox launcher is per-session, so launching many
+at the same time never races on a shared channel. This is the robust path for
+standing up multiple identities together.
+
+`AGMSG_CODEX_NAME` binds the **receive** side only. To also SEND as that name, the
+session sets its send-from with `$agmsg actas <name>` (or just replies in
+context). Needs monitor mode (the agmsg `codex` shim, `~/.agents/bin` first on
+`PATH`). Unset → unchanged single-identity behaviour.
+
+## A single session / switching in-session — `$agmsg actas <name>`
+
+Launch a normal `codex`, then send this (as your first message, or any time to
+switch identity without relaunching):
 
 ```
 $agmsg actas kimura
 ```
 
-This sets the send-from name **and** binds the receive side to `kimura` for this
-session — it arms a bridge for `kimura` on this session's thread, on the
-project's shared app-server. On success it reports `status=ok`. If another live
-session already receives as `kimura` it reports `status=held` and leaves your
-receive identity unchanged — drop it there or pick a different name.
+It sets the send-from name **and** binds the receive side to `kimura` on the
+project's shared app-server — one step, both directions. `status=held` means
+another live session already receives as `kimura`; drop it there or pick another
+name. (This is how `spawn.sh` boots managed agents:
+`--initial-input "/agmsg actas <name>"`.)
 
-Run several `codex` sessions in the project and give each a different
-`$agmsg actas <name>`; each receives only its own mail. (This is exactly how
-`spawn.sh` launches managed agents — `--initial-input "/agmsg actas <name>"`.)
+Every session here shares one app-server, so the slash → launcher hand-off goes
+through a single request channel. Binding sessions **one at a time** is fine (each
+bridge spawns and stays up); only two sessions running `actas` at the exact same
+instant can race and drop one — just re-run `actas` if a session doesn't engage.
+To stand up many at once, prefer `AGMSG_CODEX_NAME` above.
 
-`actas` receive-binding needs a monitor-mode session; on a non-monitor session it
+Receive-binding needs a monitor-mode session; on a non-monitor session `actas`
 falls back to send-only (receive still covers all your registered roles).
-
-## 2. At launch — `AGMSG_CODEX_NAME` (optional shortcut)
-
-If you'd rather bind the identity at launch — so your first *real* turn isn't
-spent on the actas command — name the session in the launch line:
-
-```bash
-AGMSG_CODEX_NAME=kimura codex     # this session receives kimura's mail
-AGMSG_CODEX_NAME=goro   codex     # a second session, receives goro's mail
-```
-
-A named session gets its **own** app-server (keyed by the name) so the
-SessionStart hook it fires inherits the identity and arms the bridge without a
-setup turn. The trade-off is an extra app-server process per identity; since you
-interact on the first turn anyway, `$agmsg actas` above is usually simpler. Needs
-monitor mode (the agmsg `codex` shim, `~/.agents/bin` first on `PATH`). Unset →
-unchanged single-identity behaviour.
 
 ## Registering the identities
 
