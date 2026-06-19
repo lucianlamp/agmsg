@@ -127,11 +127,6 @@ install_windows_helpers() {
 
   mkdir -p "$AGENTS_DIR"
 
-  local profile_installer="$SKILL_DIR/scripts/windows/install-agmsg.ps1"
-  if command -v cygpath >/dev/null 2>&1; then
-    profile_installer=$(cygpath -w "$profile_installer" 2>/dev/null || printf '%s' "$profile_installer")
-  fi
-
   # Clean up legacy helpers created by the earlier native-Windows approaches.
   local ps_shortcut="$AGENTS_DIR/$CMD_NAME.ps1"
   if [ -f "$ps_shortcut" ] && grep -q "PowerShell shortcut for agmsg on native Windows" "$ps_shortcut" 2>/dev/null; then
@@ -147,10 +142,6 @@ install_windows_helpers() {
   if [ "$removed_sqlite_shim" = true ]; then
     rm -f "$AGENTS_DIR/run/sqlite3-shim.cache"
   fi
-
-  echo "  ~ To enable the PowerShell command, run this from the PowerShell host you use:"
-  echo "    pwsh -ExecutionPolicy Bypass -File \"$profile_installer\" -FunctionName $CMD_NAME"
-  echo "    # or use powershell.exe if you use Windows PowerShell instead of PowerShell 7"
 }
 
 # --- Parse args ---
