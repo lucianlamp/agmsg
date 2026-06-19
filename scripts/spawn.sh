@@ -264,14 +264,25 @@ launch_in_tmux() {
   # the boot script's filename (boot-XXXXXX). `automatic-rename off` keeps the
   # name from being clobbered once the boot script runs the CLI / drops to a
   # shell.
-  local target_id
+  local target_id pane_id=""
   if [ "$TMUX_TARGET" = "window" ]; then
     target_id="$(tmux new-window -P -F '#{window_id}' -n "$NAME" -c "$PROJECT" "$BOOT")"
     tmux set-window-option -t "$target_id" automatic-rename off 2>/dev/null || true
+    pane_id="$(tmux display-message -p -t "$target_id" '#{pane_id}' 2>/dev/null)"
   else
     local dir="-h"; [ "$SPLIT" = "v" ] && dir="-v"
     target_id="$(tmux split-window "$dir" -P -F '#{pane_id}' -c "$PROJECT" "$BOOT")"
     tmux select-pane -t "$target_id" -T "$NAME" 2>/dev/null || true
+    pane_id="$target_id"
+  fi
+  # Surface the agmsg identity on the pane border: set @team-name/@actas-name as
+  # PANE options that the pane-border-format reads to show "<team> / <name>".
+  # Pane-scoped (not window) so a split never leaks the identity onto the
+  # leader's sibling pane, and so the CLI's own pane-title can't clobber it.
+  # Best-effort: pane options need tmux >= 3.0, so a failure must not abort spawn.
+  if [ -n "$pane_id" ]; then
+    tmux set-option -p -t "$pane_id" @team-name  "$TEAM" 2>/dev/null || true
+    tmux set-option -p -t "$pane_id" @actas-name "$NAME" 2>/dev/null || true
   fi
   # Record placement so `despawn --force` can tear this member down even if its
   # watcher later can't respond to ctrl:despawn. tmux ids are self-describing:
