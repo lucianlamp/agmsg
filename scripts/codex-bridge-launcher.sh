@@ -14,6 +14,8 @@ PARENT_PID="${4:?Missing parent_pid}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_DIR="$SKILL_DIR/run"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/actas-lock.sh"
 PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
 # Key the request file by the app-server socket so a per-identity server has its
 # own launcher inbox; the shared single-identity socket's key is the project
@@ -25,26 +27,43 @@ REQUEST_FILE="$RUN_DIR/codex-bridge-request.$server_key"
 
 mkdir -p "$RUN_DIR"
 
+# Advance `last_request` ONLY after a request is genuinely handled (bridge
+# already live, or a fresh bridge confirmed up). A spawn that never comes up must
+# stay retriable on the same request, so we do NOT mark it done up front.
 last_request=""
 while kill -0 "$PARENT_PID" 2>/dev/null; do
   if [ -f "$REQUEST_FILE" ]; then
     request="$(cat "$REQUEST_FILE" 2>/dev/null || true)"
     if [ -n "$request" ] && [ "$request" != "$last_request" ]; then
-      last_request="$request"
       IFS="$(printf '\t')" read -r req_type team name thread_id req_app_server <<EOF
 $request
 EOF
       [ -n "${req_type:-}" ] || req_type="$TYPE"
       [ -n "${req_app_server:-}" ] || req_app_server="$APP_SERVER"
-      if [ -n "${team:-}" ] && [ -n "${name:-}" ] && [ -n "${thread_id:-}" ]; then
+      if [ -z "${team:-}" ] || [ -z "${name:-}" ] || [ -z "${thread_id:-}" ]; then
+        last_request="$request"   # malformed request — don't reprocess
+      else
         pidfile="$RUN_DIR/codex-bridge.$team.$name.pid"
         if [ -f "$pidfile" ]; then
           bridge_pid="$(cat "$pidfile" 2>/dev/null || true)"
-          if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null; then
+          if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null \
+              && _args_is_bridge_for "$(ps -o args= -p "$bridge_pid" 2>/dev/null || true)" "$team" "$name"; then
+            last_request="$request"   # our bridge for this identity is already live
             sleep 0.2
             continue
           fi
+          # Stale pidfile: dead, PID-reused by an unrelated process, OR pointing
+          # at a DIFFERENT identity's bridge. A bare kill -0 would skip this
+          # request forever. Drop it and (re)arm.
+          rm -f "$pidfile"
         fi
+        # No live bridge for this identity → about to (re)arm. A respawn leaves
+        # the prior session's actas lock behind, anchored to the shared,
+        # long-lived app-server pid, so it never expires and would block this new
+        # bridge ("held by other sessions"). Release it now — after confirming no
+        # live bridge — keeping it only if another live receiver still serves it.
+        actas_lock_release_superseded "$team" "$name" "$thread_id" >/dev/null 2>&1 || true
+
         log="$RUN_DIR/codex-bridge.$team.$name.log"
         bridge_cmd="${AGMSG_CODEX_BRIDGE_CMD:-$SCRIPT_DIR/codex-bridge.js}"
         nohup "$bridge_cmd" \
@@ -56,6 +75,21 @@ EOF
           --app-server "$req_app_server" \
           --inline-inbox \
           >>"$log" 2>&1 &
+
+        # The bridge writes its own pidfile on startup. Confirm it actually came
+        # up (and is our bridge) before committing last_request; a failed launch
+        # then stays retriable on the same request.
+        for _ in $(seq 1 25); do
+          if [ -f "$pidfile" ]; then
+            bridge_pid="$(cat "$pidfile" 2>/dev/null || true)"
+            if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null \
+                && _args_is_bridge_for "$(ps -o args= -p "$bridge_pid" 2>/dev/null || true)" "$team" "$name"; then
+              last_request="$request"
+              break
+            fi
+          fi
+          sleep 0.1
+        done
       fi
     fi
   fi

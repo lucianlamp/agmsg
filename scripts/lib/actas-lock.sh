@@ -225,6 +225,126 @@ actas_lock_gc_stale() {
   echo "$count"
 }
 
+# True iff the given process argv is OUR codex bridge for (team, agent): the
+# codex-bridge.js program AND a matching --team/--name. A recycled pid that lands
+# on a DIFFERENT identity's live bridge must not count. The --team/--name values
+# are extracted and compared LITERALLY (agent names may contain glob/regex
+# metachars — join.sh accepts a.b, a*, a|b, …).
+_args_is_bridge_for() {
+  local args="$1" team="$2" agent="$3" v
+  # KNOWN LIMITATION (accepted, low probability): this matches "codex-bridge.js"
+  # as a substring of the argv rather than verifying the executable. A stale
+  # pidfile whose pid was reused by an UNRELATED process that merely carries the
+  # string "codex-bridge.js" (plus a matching --team/--name) in its argv would be
+  # mis-read as a live receiver. Closing this fully needs a per-launch identity
+  # token (or start-time) the bridge records and we compare — deferred. The far
+  # more common reuse case (pid reused by a *different identity's* real bridge)
+  # IS rejected by the --team/--name checks below.
+  case "$args" in *codex-bridge.js*) ;; *) return 1 ;; esac
+  # Extract the --team / --name VALUES up to the next " --<opt>" boundary, not the
+  # next space: team/agent names may legitimately contain spaces (the contract is
+  # arbitrary UTF-8 minus path-dangerous chars, e.g. "team one"). The values are
+  # then compared with literal `[ = ]`, so glob/regex metachars in them are inert.
+  case " $args " in *" --team "*) ;; *) return 1 ;; esac
+  v="${args##*--team }"; v="${v%% --*}"; [ "$v" = "$team" ] || return 1
+  case " $args " in *" --name "*) ;; *) return 1 ;; esac
+  v="${args##*--name }"; v="${v%% --*}"; [ "$v" = "$agent" ] || return 1
+  return 0
+}
+
+# True iff some LIVE process is actually receiving for codex (team, agent):
+# either the monitor bridge (codex-bridge.<team>.<agent>.pid pointing at a live
+# codex-bridge.js for THIS identity) or a host-managed / claude-code watcher
+# (a live watch.sh whose final arg is exactly <agent>). Decides whether an
+# exclusivity lock still has a real owner. False "no" could strip a live owner's
+# lock, AND for codex a stray false "yes" keeps a stale lock that then blocks
+# subscription — so both directions are matched precisely (identity-checked,
+# literal), never by loose substring/regex.
+_actas_has_live_receiver() {
+  local team="$1" agent="$2" dir pf p procs line
+  dir="$(_actas_lock_dir)"
+  pf="$dir/codex-bridge.$team.$agent.pid"
+  if [ -f "$pf" ]; then
+    p="$(cat "$pf" 2>/dev/null || true)"
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      _args_is_bridge_for "$(ps -o args= -p "$p" 2>/dev/null || true)" "$team" "$agent" \
+        && return 0
+    fi
+  fi
+  # A live watch.sh whose LAST positional arg is exactly <agent>. Capture ps into
+  # a variable and iterate via a here-doc (never `ps | grep`, whose pipe under the
+  # caller's `set -o pipefail` turns grep's early exit into a SIGPIPE → false "no
+  # receiver"). The last-word equality is literal, so glob/regex metachars in
+  # <agent> can't over- or under-match.
+  procs="$(ps -eo args= 2>/dev/null || true)"
+  while IFS= read -r line; do
+    case "$line" in *watch.sh*) ;; *) continue ;; esac
+    # The watcher's trailing positional arg is the agent; it may contain spaces,
+    # so test "line ends with ' <agent>'" via a LITERAL (quoted) suffix strip
+    # rather than taking only the last whitespace-delimited word.
+    [ "${line%" $agent"}" != "$line" ] && return 0
+  done <<RECV
+$procs
+RECV
+  return 1
+}
+
+# Release a SUPERSEDED exclusivity lock for (team, agent) when a new session
+# (this_sid) is taking over the identity. Background: codex actas-lock liveness
+# is anchored to a pid, and for codex that pid is the SHARED, long-lived
+# app-server — which outlives the session that claimed the lock. So a dead
+# predecessor's lock stays "alive" under actas_lock_sid_alive and blocks the new
+# session forever ("held by other sessions"); actas_lock_gc_stale never reaps it
+# because the app-server pid is genuinely running.
+#
+# Safe by construction (addresses the codex review):
+#   - never touches a lock owned by THIS session (owner_sid == this_sid);
+#   - keeps the lock whenever a LIVE receiver (bridge or watcher) is actually
+#     serving the identity — so it can't strip a live owner (no "is the pid an
+#     app-server" guessing, which both over-matched unrelated processes and
+#     missed pid reuse);
+#   - releases under a mkdir mutex with a compare-and-delete: it re-reads the
+#     owner and re-checks liveness inside the mutex and only unlinks if nothing
+#     changed, so it can't clobber a fresh re-claim.
+# Echoes 1 if released, else 0.
+actas_lock_release_superseded() {
+  local team="$1" agent="$2" this_sid="$3"
+  local lock owner owner_sid mutex holder released=0
+  lock="$(actas_lock_path "$team" "$agent")"
+  [ -f "$lock" ] || { echo 0; return 0; }
+  owner="$(head -1 "$lock" 2>/dev/null || true)"
+  [ -n "$owner" ] || { echo 0; return 0; }
+  owner_sid="${owner%.*}"
+  [ "$owner_sid" != "$this_sid" ] || { echo 0; return 0; }
+  _actas_has_live_receiver "$team" "$agent" && { echo 0; return 0; }
+
+  mutex="$lock.reclaim"
+  if ! mkdir "$mutex" 2>/dev/null; then
+    # Mutex held. Recover it if its holder died mid-reclaim (otherwise the lock
+    # could never be reclaimed again): take it over only when the recorded holder
+    # pid is gone. mkdir stays the atomic arbiter, so a concurrent recoverer just
+    # loses the re-mkdir and yields.
+    holder="$(cat "$mutex/owner" 2>/dev/null || true)"
+    # Empty owner == a reclaimer that just won mkdir and hasn't written its pid
+    # yet. Indistinguishable from a live holder mid-setup, so YIELD rather than
+    # risk deleting an in-progress mutex. Only recover when a recorded holder pid
+    # is provably dead.
+    if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+      echo 0; return 0
+    fi
+    rm -rf "$mutex" 2>/dev/null || true
+    mkdir "$mutex" 2>/dev/null || { echo 0; return 0; }
+  fi
+  printf '%s\n' "$$" > "$mutex/owner" 2>/dev/null || true
+  if [ "$(head -1 "$lock" 2>/dev/null || true)" = "$owner" ] \
+      && ! _actas_has_live_receiver "$team" "$agent"; then
+    rm -f "$lock"
+    released=1
+  fi
+  rm -rf "$mutex" 2>/dev/null || true
+  echo "$released"
+}
+
 # Classify a (team, agent) pair relative to the calling session.
 # Echoes one of: free | mine | other:<sid>
 actas_lock_state() {

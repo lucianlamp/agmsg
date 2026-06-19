@@ -237,3 +237,169 @@ live_pid() { echo "$$"; }
   run actas_lock_state "T" "alice" "sid-me"
   [ "$output" = "free" ]
 }
+
+# --- actas_lock_release_superseded (codex respawn self-heal) ---------------
+# Unique role names so the watcher scan over real host processes can't collide.
+
+@test "release_superseded: keeps the lock while OUR live bridge is receiving (review #1)" {
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name zzrole --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"
+  echo "other-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  kill "$bpid" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: a bridge for a DIFFERENT identity is NOT a receiver (review #1)" {
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name OTHER --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"   # mislabeled / reused pid
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  kill "$bpid" 2>/dev/null || true
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: a recycled non-bridge pid is NOT a receiver" {
+  sleep 30 & other=$!
+  echo "$other" > "$RUN_DIR/codex-bridge.zzteam.zzrole.pid"
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  kill "$other" 2>/dev/null || true
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: live watcher keeps the lock under set -o pipefail (SIGPIPE)" {
+  cat > "$TEST_SKILL_DIR/watch.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+  chmod +x "$TEST_SKILL_DIR/watch.sh"
+  bash "$TEST_SKILL_DIR/watch.sh" sid proj codex zzrole &
+  wpid=$!
+  sleep 0.3
+  echo "other-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run bash -c "set -euo pipefail; export SKILL_DIR='$SKILL_DIR'; source '$SKILL_DIR/scripts/lib/actas-lock.sh'; actas_lock_release_superseded zzteam zzrole new-thread"
+  kill "$wpid" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: a watcher for a metachar-named OTHER role does not false-match (review #2)" {
+  cat > "$TEST_SKILL_DIR/watch.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+  chmod +x "$TEST_SKILL_DIR/watch.sh"
+  bash "$TEST_SKILL_DIR/watch.sh" sid proj codex axb &   # literally different from a.b
+  wpid=$!
+  sleep 0.3
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam 'a.b')"
+  run actas_lock_release_superseded zzteam 'a.b' new-thread
+  kill "$wpid" 2>/dev/null || true
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam 'a.b')" ]
+}
+
+@test "release_superseded: releases a stale lock when NO receiver is alive" {
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: never touches a lock owned by this same session" {
+  echo "same-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  run actas_lock_release_superseded zzteam zzrole same-thread
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: yields while a LIVE reclaimer holds the mutex (review #4)" {
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  mkdir "$(actas_lock_path zzteam zzrole).reclaim"
+  sleep 30 & live=$!
+  echo "$live" > "$(actas_lock_path zzteam zzrole).reclaim/owner"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  kill "$live" 2>/dev/null || true
+  rm -rf "$(actas_lock_path zzteam zzrole).reclaim" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: an empty-owner mutex yields, never treated as stale (review #4)" {
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  mkdir "$(actas_lock_path zzteam zzrole).reclaim"   # owner not yet written
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  rm -rf "$(actas_lock_path zzteam zzrole).reclaim" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam zzrole)" ]
+}
+
+@test "release_superseded: recovers a stale mutex (dead holder pid) then releases (review #4)" {
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam zzrole)"
+  mkdir "$(actas_lock_path zzteam zzrole).reclaim"
+  sleep 0 & dead=$!
+  wait "$dead" 2>/dev/null || true
+  echo "$dead" > "$(actas_lock_path zzteam zzrole).reclaim/owner"
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam zzrole)" ]
+  [ ! -d "$(actas_lock_path zzteam zzrole).reclaim" ]
+}
+
+@test "release_superseded: no-op when no lock exists" {
+  run actas_lock_release_superseded zzteam zzrole new-thread
+  [ "$output" = "0" ]
+}
+
+@test "release_superseded: keeps the lock while a SPACE-named bridge is receiving (review #1 spaces)" {
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name 'foo bar' --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.foo bar.pid"
+  echo "other-thread.99999999" > "$(actas_lock_path zzteam 'foo bar')"
+  run actas_lock_release_superseded zzteam 'foo bar' new-thread
+  kill "$bpid" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam 'foo bar')" ]
+}
+
+@test "release_superseded: keeps the lock while a SPACE-named watcher is receiving" {
+  cat > "$TEST_SKILL_DIR/watch.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+  chmod +x "$TEST_SKILL_DIR/watch.sh"
+  bash "$TEST_SKILL_DIR/watch.sh" sid proj codex 'foo bar' &
+  wpid=$!
+  sleep 0.3
+  echo "other-thread.99999999" > "$(actas_lock_path zzteam 'foo bar')"
+  run actas_lock_release_superseded zzteam 'foo bar' new-thread
+  kill "$wpid" 2>/dev/null || true
+  [ "$output" = "0" ]
+  [ -f "$(actas_lock_path zzteam 'foo bar')" ]
+}
+
+@test "release_superseded: a glob-named bridge value is compared literally (a* is not a*)" {
+  # A bridge actually named 'literal' must not satisfy a release check for 'a*'.
+  printf '#!/usr/bin/env bash\nsleep 30\n' > "$TEST_SKILL_DIR/codex-bridge.js"
+  chmod +x "$TEST_SKILL_DIR/codex-bridge.js"
+  bash "$TEST_SKILL_DIR/codex-bridge.js" --team zzteam --name literal --thread tX &
+  bpid=$!
+  echo "$bpid" > "$RUN_DIR/codex-bridge.zzteam.a*.pid"
+  echo "old-thread.99999999" > "$(actas_lock_path zzteam 'a*')"
+  run actas_lock_release_superseded zzteam 'a*' new-thread
+  kill "$bpid" 2>/dev/null || true
+  [ "$output" = "1" ]
+  [ ! -f "$(actas_lock_path zzteam 'a*')" ]
+}
