@@ -53,6 +53,25 @@ teardown() {
   grep -q "monitor real=$FAKE_CODEX <--project> <$TEST_PROJECT> <--codex-command> <codex> <--> <fix this>" "$CALL_LOG"
 }
 
+@test "codex shim: 'both' delivery mode also routes through codex-monitor" {
+  # `set both codex` is rejected by the codex bridge beta, but a project can end
+  # up in `both` via the claude-code flow / older installs. `both` = monitor
+  # primary, so the bridge must still engage (exact-`monitor`-only used to let
+  # `both` projects pass through to bare codex with no bridge). Stub delivery.sh's
+  # status to report it.
+  cat > "$SCRIPTS/delivery.sh" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "status" ] && { echo "mode: both"; exit 0; }
+exit 0
+EOF
+  chmod +x "$SCRIPTS/delivery.sh"
+
+  run bash -c 'cd "$TEST_PROJECT" && AGMSG_REAL_CODEX="$FAKE_CODEX" AGMSG_CODEX_MONITOR_CMD="$FAKE_MONITOR" bash "$SCRIPTS/codex-shim.sh" resume --last'
+
+  [ "$status" -eq 0 ]
+  grep -q "monitor real=$FAKE_CODEX <--project> <$TEST_PROJECT> <--codex-command> <resume> <--> <--last>" "$CALL_LOG"
+}
+
 @test "codex shim: non-monitor project passes through to real codex" {
   bash "$SCRIPTS/delivery.sh" set turn codex "$TEST_PROJECT" >/dev/null
 

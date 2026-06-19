@@ -107,7 +107,10 @@ is_monitor_project() {
   local project="$1"
   local status
   status="$("$SCRIPT_DIR/delivery.sh" status codex "$project" 2>/dev/null || true)"
-  printf '%s\n' "$status" | grep -qx "mode: monitor"
+  # `both` = monitor primary + turn fallback, so the bridge should still engage;
+  # match it as well as plain `monitor` (exact-`monitor`-only left `both`
+  # projects passing through to bare codex with no bridge).
+  printf '%s\n' "$status" | grep -qxE "mode: (monitor|both)"
 }
 
 real_codex="$(resolve_real_codex)"
