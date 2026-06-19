@@ -211,7 +211,14 @@ AGMSG_RESOLVE_PROJECT=0 "$SCRIPT_DIR/join.sh" "$TEAM" "$NAME" "$AGENT_TYPE" "$PR
 # dir basename so a custom install (e.g. `/m`) spawns `/m actas <name>` rather
 # than a nonexistent `/agmsg actas <name>`.
 CMD_NAME="$(basename "$SKILL_DIR")"
-ACTAS_PROMPT="/${CMD_NAME} actas ${NAME}"
+# Command prefix is per-agent: Codex invokes the skill command as `$agmsg`,
+# Claude Code (and the others) as `/agmsg`. Use the right one for the initial
+# prompt so the agent actually runs the actas command on boot.
+case "$AGENT_TYPE" in
+  codex) CMD_PREFIX='$' ;;
+  *)     CMD_PREFIX='/' ;;
+esac
+ACTAS_PROMPT="${CMD_PREFIX}${CMD_NAME} actas ${NAME}"
 
 BOOT_DIR="${TMPDIR:-/tmp}/agmsg-spawn"
 mkdir -p "$BOOT_DIR" 2>/dev/null || true
@@ -224,7 +231,15 @@ BOOT="$BOOT.command"
 {
   echo '#!/usr/bin/env bash'
   printf 'cd %q || exit 1\n' "$PROJECT"
-  printf '%q %q\n' "$CLI_BIN" "$ACTAS_PROMPT"
+  # For codex, always launch with BOTH AGMSG_CODEX_NAME (per-identity app-server:
+  # receive binding + isolated request hand-off, so several spawns don't race)
+  # AND the `actas <name>` initial prompt (which also sets the send-from that the
+  # env alone does not). The two together give a complete, race-free identity.
+  if [ "$AGENT_TYPE" = "codex" ]; then
+    printf 'AGMSG_CODEX_NAME=%q %q %q\n' "$NAME" "$CLI_BIN" "$ACTAS_PROMPT"
+  else
+    printf '%q %q\n' "$CLI_BIN" "$ACTAS_PROMPT"
+  fi
   echo 'rm -f "$0" 2>/dev/null'   # self-clean once the agent exits
   echo 'exec "${SHELL:-/bin/bash}" -i'
 } > "$BOOT"

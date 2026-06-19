@@ -151,6 +151,23 @@ teardown() {
   [[ "$output" == *"$PROJ"* ]]
 }
 
+@test "spawn: codex boots with AGMSG_CODEX_NAME and a \$-prefixed actas prompt" {
+  bash "$SCRIPTS/join.sh" myteam existing codex "$PROJ"
+  run bash "$SCRIPTS/spawn.sh" codex kimura --project "$PROJ" --no-wait
+  [ "$status" -eq 0 ]
+
+  local cmd; cmd="$(basename "$TEST_SKILL_DIR")"
+  boot="$(cat "$CAPTURE")"
+  [ -f "$boot" ]
+  run cat "$boot"
+  # Codex always launches with BOTH the per-identity env and the actas prompt,
+  # and the prompt uses the codex `$cmd` form, not the claude-code `/cmd` form.
+  [[ "$output" == *"AGMSG_CODEX_NAME="* ]]
+  [[ "$output" == *"kimura"* ]]
+  [[ "$output" == *"actas"* ]]
+  [[ "$output" != *"/$cmd actas"* ]]
+}
+
 @test "spawn: actas prompt uses the install command name (not hardcoded agmsg)" {
   # Rename the skill dir to a custom command name and re-point SCRIPTS so the
   # script resolves SKILL_DIR basename = the custom name.

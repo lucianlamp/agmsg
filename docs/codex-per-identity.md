@@ -37,10 +37,20 @@ request hand-off to the out-of-sandbox launcher is per-session, so launching man
 at the same time never races on a shared channel. This is the robust path for
 standing up multiple identities together.
 
-`AGMSG_CODEX_NAME` binds the **receive** side only. To also SEND as that name, the
-session sets its send-from with `$agmsg actas <name>` (or just replies in
-context). Needs monitor mode (the agmsg `codex` shim, `~/.agents/bin` first on
-`PATH`). Unset → unchanged single-identity behaviour.
+`AGMSG_CODEX_NAME` binds the **receive** side only, so the canonical launch pairs
+it with the actas command as the first message:
+
+```bash
+AGMSG_CODEX_NAME=kimura codex "\$agmsg actas kimura"
+```
+
+The env gives the isolated per-identity receive; `$agmsg actas kimura` adds the
+send-from (and is idempotent with the receive bridge the env already armed).
+`spawn.sh codex <name>` does exactly this for you. Needs monitor mode (the agmsg
+`codex` shim, `~/.agents/bin` first on `PATH`). Unset → unchanged single-identity
+behaviour.
+
+> Codex invokes the skill command as `$agmsg` (Claude Code uses `/agmsg`).
 
 ## A single session / switching in-session — `$agmsg actas <name>`
 
