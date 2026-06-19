@@ -175,7 +175,7 @@ Same project, same agent type, different role — for example a `tech-lead` iden
 
 See [docs/actas.md](docs/actas.md) for the full mechanics — exclusivity model, recovery, liveness / PID recycling, Codex caveat.
 
-On **Codex** you can run several identities in one project *at the same time*, each receiving only its own mail — name each session at launch (`AGMSG_CODEX_NAME=<name> codex`) or bind one in-session with `$agmsg actas <name>`. See [docs/codex-per-identity.md](docs/codex-per-identity.md).
+On **Codex** you can run several identities in one project *at the same time*, each receiving only its own mail — make each session's first message `$agmsg actas <name>` (one step binds receive + send), or bind at launch with `AGMSG_CODEX_NAME=<name> codex`. See [docs/codex-per-identity.md](docs/codex-per-identity.md).
 
 ### Spawn a new agent (`spawn`)
 

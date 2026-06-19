@@ -9,43 +9,49 @@ sessions in that project and have each one **receive only its own mail** —
 `kimura`-addressed messages reach the `kimura` session, `goro`-addressed messages
 reach the `goro` session.
 
-There are two ways to tell a session which identity it receives as.
+There are two ways to tell a session which identity it receives as. The bridge
+only engages on your **first turn** either way (the SessionStart hook fires on
+your first message, not the moment Codex opens), so making that first message
+`$agmsg actas <name>` is usually all you need — one step does both jobs.
 
-## 1. At launch — `AGMSG_CODEX_NAME` (recommended)
+## 1. In-session — `$agmsg actas <name>` (recommended)
 
-Name the session when you start it:
-
-```bash
-AGMSG_CODEX_NAME=kimura codex     # this session receives kimura's mail
-AGMSG_CODEX_NAME=goro   codex     # a second session, receives goro's mail
-```
-
-Each named session gets its **own app-server**, so the SessionStart hook it fires
-inherits that session's identity and arms a bridge for it. Send a first message
-to start the bridge (as with any monitor session).
-
-Requires monitor mode — i.e. launched through the agmsg `codex` shim with
-`~/.agents/bin` first on `PATH` (see [codex-monitor-beta.md](codex-monitor-beta.md)).
-Unset `AGMSG_CODEX_NAME` → unchanged single-identity behaviour.
-
-## 2. In-session — `$agmsg actas <name>`
-
-Inside a running Codex session, switch or pick the receive identity without
-relaunching:
+Launch a normal `codex`, then make your first message the actas command (or send
+it any time to switch identity without relaunching):
 
 ```
 $agmsg actas kimura
 ```
 
 This sets the send-from name **and** binds the receive side to `kimura` for this
-session (it arms a bridge for `kimura` on this session's thread). On success it
-reports `status=ok`. If another live session already receives as `kimura` it
-reports `status=held` and leaves your receive identity unchanged — drop it there
-or pick a different name.
+session — it arms a bridge for `kimura` on this session's thread, on the
+project's shared app-server. On success it reports `status=ok`. If another live
+session already receives as `kimura` it reports `status=held` and leaves your
+receive identity unchanged — drop it there or pick a different name.
+
+Run several `codex` sessions in the project and give each a different
+`$agmsg actas <name>`; each receives only its own mail. (This is exactly how
+`spawn.sh` launches managed agents — `--initial-input "/agmsg actas <name>"`.)
 
 `actas` receive-binding needs a monitor-mode session; on a non-monitor session it
-falls back to send-only (receive still covers all your registered roles), exactly
-as before.
+falls back to send-only (receive still covers all your registered roles).
+
+## 2. At launch — `AGMSG_CODEX_NAME` (optional shortcut)
+
+If you'd rather bind the identity at launch — so your first *real* turn isn't
+spent on the actas command — name the session in the launch line:
+
+```bash
+AGMSG_CODEX_NAME=kimura codex     # this session receives kimura's mail
+AGMSG_CODEX_NAME=goro   codex     # a second session, receives goro's mail
+```
+
+A named session gets its **own** app-server (keyed by the name) so the
+SessionStart hook it fires inherits the identity and arms the bridge without a
+setup turn. The trade-off is an extra app-server process per identity; since you
+interact on the first turn anyway, `$agmsg actas` above is usually simpler. Needs
+monitor mode (the agmsg `codex` shim, `~/.agents/bin` first on `PATH`). Unset →
+unchanged single-identity behaviour.
 
 ## Registering the identities
 
