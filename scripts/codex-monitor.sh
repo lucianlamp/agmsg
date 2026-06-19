@@ -105,9 +105,9 @@ launcher_cmd="${AGMSG_CODEX_BRIDGE_LAUNCHER_CMD:-$SCRIPT_DIR/codex-bridge-launch
 cd "$PROJECT"
 case "$CODEX_COMMAND" in
   codex)
-    exec "$REAL_CODEX" --remote "$SOCKET_URL" "${CODEX_ARGS[@]}"
+    exec "$REAL_CODEX" --remote "$SOCKET_URL" ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}
     ;;
   resume)
-    exec "$REAL_CODEX" resume --remote "$SOCKET_URL" "${CODEX_ARGS[@]}"
+    exec "$REAL_CODEX" resume --remote "$SOCKET_URL" ${CODEX_ARGS[@]+"${CODEX_ARGS[@]}"}
     ;;
 esac
