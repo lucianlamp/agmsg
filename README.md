@@ -113,34 +113,26 @@ The **command name** determines:
 
 After install, **restart your agent** (Claude Code / Codex / Gemini CLI / Copilot CLI / Antigravity / OpenCode) so it picks up the new skill.
 
-### Native Windows / PowerShell profile function
+### Windows: Git Bash & Codex
 
-When `install.sh` runs under Git Bash on Windows, it installs the PowerShell
-launcher under the skill tree. To enable an `agmsg` PowerShell command, add the
-profile function from the PowerShell host you use:
+agmsg's implementation is the Bash script set under `scripts/`, so on Windows the
+scripts run through **Git Bash** (Git for Windows, with `sqlite3` available on the
+Git Bash PATH). There is no PowerShell reimplementation.
 
-```powershell
-pwsh -ExecutionPolicy Bypass -File "$HOME\.agents\skills\agmsg\scripts\windows\install-agmsg.ps1"
-```
+- **Codex delivery hooks** are wrapped automatically. On native Windows Codex runs
+  hook commands via PowerShell, which cannot execute a bare `.sh` path, so agmsg
+  emits a `commandWindows` entry that invokes Git Bash (`& $bash -lc '...'`). No
+  setup needed — see `windows_wrap()` in `scripts/delivery.sh`.
+- **Interactive / agent-typed commands** call the scripts through Git Bash, e.g.
+  `bash -lc 'scripts/whoami.sh "$(pwd)" codex'`.
+- Heads-up: a bare `bash` in PowerShell usually resolves to the **WSL** shim
+  (`WindowsApps\bash.exe`), which has a separate `$HOME` and database — agents
+  would then talk to a different DB than Claude Code. Pin Git Bash in your
+  PowerShell profile so everything shares one database:
 
-Use `powershell` instead of `pwsh` if you use Windows PowerShell rather than
-PowerShell 7; each host has its own profile path.
-
-Then a PowerShell session can run:
-
-```powershell
-agmsg
-agmsg history
-agmsg team
-agmsg send alice "hello from PowerShell"
-agmsg mode turn
-```
-
-The PowerShell launcher delegates to the existing Bash scripts; it does not
-reimplement agmsg logic or read the SQLite database directly. Git Bash and
-`sqlite3` must both be available from the Windows environment. See
-[Windows PowerShell launcher](docs/windows.md) for details and an optional
-profile installer.
+  ```powershell
+  Set-Alias bash 'C:\Program Files\Git\bin\bash.exe'
+  ```
 
 ## First run
 
