@@ -100,6 +100,14 @@ codex logout
 The shim also passes through when the current project is not in Codex monitor
 mode.
 
+On Windows the shim is a Bash script (`~/.agents/bin/codex`). Git Bash runs it
+directly, but PowerShell and cmd cannot execute an extensionless script — they
+resolve a bare `codex` to it ahead of the real `codex.exe` and then error
+("Cannot run a document …"). The installer therefore also drops a
+`~/.agents/bin/codex.cmd` wrapper that re-enters Git Bash and runs the same shim,
+so `codex` engages monitor mode from any shell (override the bash it uses with
+`GIT_BASH` / `AGMSG_BASH`).
+
 ## Bridge Mechanics
 
 `codex-monitor.sh` starts (or reuses) an agmsg-managed Codex app-server socket
