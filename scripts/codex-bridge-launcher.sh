@@ -21,7 +21,13 @@ PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
 # own launcher inbox; the shared single-identity socket's key is the project
 # hash, so this is unchanged for the common case. Must match the writer key in
 # session-start.sh.
-server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+# Prefer the key codex-monitor.sh exported (AGMSG_CODEX_SERVER_KEY); fall back to
+# deriving it from the endpoint filename (unix:// ".sock") for back-compat. A
+# ws:// endpoint has no ".sock" to parse, so the explicit key is required there.
+server_key="${AGMSG_CODEX_SERVER_KEY:-}"
+if [ -z "$server_key" ]; then
+  server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+fi
 [ -n "$server_key" ] || server_key="$PROJECT_HASH"
 REQUEST_FILE="$RUN_DIR/codex-bridge-request.$server_key"
 

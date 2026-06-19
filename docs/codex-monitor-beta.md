@@ -106,6 +106,23 @@ mode.
 under `~/.agents/skills/<cmd>/run/`, starts the out-of-sandbox bridge launcher,
 and then connects the Codex TUI to that socket with `--remote`.
 
+> **Windows transport.** macOS/Linux use a unix-domain socket
+> (`unix://…/run/codex-app-server.<key>.sock`). On native Windows (Git Bash) that
+> does not work: `codex.exe` cannot bind an MSYS `/c/…` path, Git Bash's `-S` test
+> does not see a Windows AF_UNIX file as a socket, and Node's
+> `net.createConnection(path)` treats a path as a named pipe. There
+> `codex-monitor.sh` binds a TCP loopback endpoint
+> (`ws://127.0.0.1:<ephemeral-port>`), records the port in a `.port` file, and
+> polls the app-server's `/readyz` HTTP endpoint for readiness. The bridge speaks
+> the same WebSocket framing over TCP instead of the UDS, and the `--remote` TUI
+> connects to the `ws://` endpoint. Because a `ws://` URL has no `.sock` filename
+> to key on (and `:` is not a legal Windows filename char), the hook and launcher
+> agree on the request-file key via `AGMSG_CODEX_SERVER_KEY`. Override the
+> auto-detected transport with `AGMSG_CODEX_TRANSPORT=ws|unix`. On Windows the
+> bridge also runs the `.sh` helpers through Git Bash (a bare `.sh` path is not
+> directly executable by Node or codex's `process/spawn`) and converts the project
+> path to its bash form with `cygpath` before handing it to those scripts.
+
 Codex fires the SessionStart hook on the session's **first turn** (the first
 message you send), not the moment the TUI opens — so the bridge does not exist
 until you interact once after a restart.
@@ -125,7 +142,8 @@ connect to the unix socket (EPERM). Instead:
    writes a **request file** under `run/` (it never touches the socket).
 2. `codex-bridge-launcher.sh`, started by `codex-monitor.sh` **outside** the
    sandbox, reads the request file and starts `codex-bridge.js`.
-3. The bridge connects to the same app-server over **WebSocket-over-UDS**,
+3. The bridge connects to the same app-server over **WebSocket** (over the UDS,
+   or TCP loopback on Windows — see the Windows transport note above),
    resumes the thread, and arms `watch-once.sh` via the app-server `process/spawn`
    API (which polls the agmsg DB for unread rows, `read_at IS NULL`).
 4. On an unread message it inlines the text into a `turn/start` on that thread —
