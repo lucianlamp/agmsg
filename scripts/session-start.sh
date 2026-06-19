@@ -105,14 +105,45 @@ if [ "$TYPE" = "codex" ]; then
   fi
   [ -n "$app_server" ] || exit 0
 
-  pair_count=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { c++ } END { print c + 0 }')
-  [ "$pair_count" = "1" ] || exit 0
-  team=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { print $1; exit }')
-  name=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { print $2; exit }')
+  # Resolve THIS session's receive identity. Precedence:
+  #   1. AGMSG_CODEX_NAME env — set at launch: `AGMSG_CODEX_NAME=kimura codex`.
+  #   2. thread-keyed marker written by `/agmsg actas <name>` (Codex has no stable
+  #      session_id mid-slash-command, so the selection is keyed by thread_id):
+  #      run/codex-name.<project_hash>.<thread_id>.
+  #   3. the sole registered pair when there is exactly one codex identity
+  #      (back-compat: single-identity projects need no selector).
+  # A project with >1 codex identity REQUIRES (1) or (2); without a selector we
+  # cannot tell which identity this session receives as, so we bail rather than
+  # guess (preserving today's behavior for the ambiguous case).
+  project_hash=$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')
+  want="${AGMSG_CODEX_NAME:-}"
+  if [ -z "$want" ]; then
+    marker="$RUN_DIR/codex-name.$project_hash.$thread_id"
+    [ -f "$marker" ] && want=$(head -1 "$marker" 2>/dev/null | tr -d '[:space:]')
+  fi
+
+  team=""; name=""
+  if [ -n "$want" ]; then
+    # Validate $want is a registered codex pair for this project; resolve its team.
+    team=$(printf '%s\n' "$PAIRS" | awk -v n="$want" 'NF >= 2 && $2 == n { print $1; exit }')
+    if [ -z "$team" ]; then
+      # Named identity not registered for this project — do not guess. Leave a
+      # breadcrumb where an operator would look and stop without a bridge.
+      mkdir -p "$RUN_DIR" 2>/dev/null || true
+      printf 'session-start: requested codex identity "%s" is not registered for %s; not engaging a bridge.\n' \
+        "$want" "$PROJECT" >> "$RUN_DIR/codex-bridge.unknown.$want.log" 2>/dev/null || true
+      exit 0
+    fi
+    name="$want"
+  else
+    pair_count=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { c++ } END { print c + 0 }')
+    [ "$pair_count" = "1" ] || exit 0
+    team=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { print $1; exit }')
+    name=$(printf '%s\n' "$PAIRS" | awk 'NF >= 2 { print $2; exit }')
+  fi
   [ -n "$team" ] && [ -n "$name" ] || exit 0
 
   if [ "${AGMSG_CODEX_BRIDGE_LAUNCHER:-}" = "1" ]; then
-    project_hash=$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')
     request_file="$RUN_DIR/codex-bridge-request.$project_hash"
     tmp_request="$request_file.$$"
     mkdir -p "$RUN_DIR" 2>/dev/null || true
