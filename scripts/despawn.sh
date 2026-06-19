@@ -49,6 +49,12 @@ done
 case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be a whole number of seconds" ;; esac
 
 SPAWN_REC="$(agmsg_spawn_path "$TEAM" "$NAME")"
+# The spawn record's 3rd field is the agent type — the authoritative "is this a
+# spawned codex member" signal. A codex-bridge pidfile alone is NOT: it can be
+# stale/mislabeled and would wrongly divert a claude-code member off its graceful
+# (watcher) path.
+SPAWN_TYPE=""
+[ -f "$SPAWN_REC" ] && IFS=$'\t' read -r _ _ SPAWN_TYPE < "$SPAWN_REC" 2>/dev/null || true
 
 # Kill the recorded tmux target. ids are self-describing: %N pane, @N window.
 kill_recorded_placement() {
@@ -69,6 +75,14 @@ if [ "$FORCE" = "1" ]; then
   [ -f "$SPAWN_REC" ] || die "no placement record for '$TEAM/$NAME' — nothing to force (was it launched via 'spawn'? graceful despawn does not need this)"
   IFS=$'\t' read -r _id _proj _type < "$SPAWN_REC"
   kill_recorded_placement >/dev/null
+  # Kill the monitor bridge too, but ONLY for a codex member — the same
+  # spawn-type contract the graceful path honours. A claude-code member must
+  # never tear down a codex bridge that happens to share its team/name (that
+  # bridge belongs to a different, live codex session). Done after the placement
+  # so the launcher/TUI is already gone and can't re-arm it.
+  if [ "$SPAWN_TYPE" = "codex" ]; then
+    stop_codex_bridge_for "$TEAM" "$NAME" >/dev/null
+  fi
   # Drop the member's registration, and release its (now-stale) lock.
   if [ -n "${_proj:-}" ] && [ -n "${_type:-}" ]; then
     "$SCRIPT_DIR/reset.sh" "$_proj" "$_type" "$NAME" >/dev/null 2>&1 || true
@@ -81,6 +95,25 @@ if [ "$FORCE" = "1" ]; then
 fi
 
 # --- Graceful ---
+# A spawned codex member has no watcher to act on ctrl:despawn, so tear it down
+# directly instead of waiting (which would always time out). Order avoids a
+# re-arm race: stop the placement (launcher/TUI) first, then the verified bridge,
+# then registration + lock. A codex bridge with no spawn record is outside spawn
+# management — leave it to `drop` / `delivery off`, not despawn.
+if [ -f "$SPAWN_REC" ] && [ "$SPAWN_TYPE" = "codex" ]; then
+  IFS=$'\t' read -r _id _proj _type < "$SPAWN_REC"
+  kill_recorded_placement >/dev/null || true
+  stop_codex_bridge_for "$TEAM" "$NAME" >/dev/null
+  if [ -n "${_proj:-}" ] && [ -n "${_type:-}" ]; then
+    "$SCRIPT_DIR/reset.sh" "$_proj" "$_type" "$NAME" >/dev/null 2>&1 || true
+  fi
+  owner="$(actas_lock_owner "$TEAM" "$NAME")"
+  [ -n "$owner" ] && actas_lock_release "$TEAM" "$NAME" "$owner" 2>/dev/null || true
+  rm -f "$SPAWN_REC" 2>/dev/null || true
+  echo "status=ok name=$NAME team=$TEAM note=codex-teardown"
+  exit 0
+fi
+
 state="$(actas_lock_state "$TEAM" "$NAME" "" 2>/dev/null || echo free)"
 case "$state" in
   free)

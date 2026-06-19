@@ -252,6 +252,32 @@ _args_is_bridge_for() {
   return 0
 }
 
+# Stop the codex monitor bridge for (team, agent): kill its process and remove
+# its pidfile/meta/log. The pid is killed ONLY after confirming the live process
+# is actually OUR bridge for this identity (_args_is_bridge_for) — a recycled or
+# mislabeled pidfile must never make us kill an unrelated process; in that case we
+# clean only the stale artifacts. No-op (echoes 0) when there is no pidfile (e.g.
+# a non-codex member). Echoes 1 if a bridge process was signalled, else 0.
+# Same KNOWN LIMITATION as _args_is_bridge_for: identity is matched from argv, not
+# a per-launch token; a start_time/nonce in the bridge meta would close it.
+stop_codex_bridge_for() {
+  local team="$1" agent="$2" dir pidfile bpid i killed=0
+  dir="$(_actas_lock_dir)"
+  pidfile="$dir/codex-bridge.$team.$agent.pid"
+  [ -f "$pidfile" ] || { echo 0; return 0; }
+  bpid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [ -n "$bpid" ] && kill -0 "$bpid" 2>/dev/null \
+      && _args_is_bridge_for "$(ps -o args= -p "$bpid" 2>/dev/null || true)" "$team" "$agent"; then
+    kill "$bpid" 2>/dev/null || true
+    i=0
+    while kill -0 "$bpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$bpid" 2>/dev/null && kill -9 "$bpid" 2>/dev/null || true
+    killed=1
+  fi
+  rm -f "$pidfile" "${pidfile%.pid}.meta" "${pidfile%.pid}.log"
+  echo "$killed"
+}
+
 # True iff some LIVE process is actually receiving for codex (team, agent):
 # either the monitor bridge (codex-bridge.<team>.<agent>.pid pointing at a live
 # codex-bridge.js for THIS identity) or a host-managed / claude-code watcher
