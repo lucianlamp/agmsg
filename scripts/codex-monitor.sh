@@ -87,38 +87,102 @@ if [ -n "${AGMSG_CODEX_NAME:-}" ]; then
   _id=$(printf '%s' "$AGMSG_CODEX_NAME" | tr -c 'A-Za-z0-9._-' '_')
   SERVER_KEY="${PROJECT_HASH:0:12}.${_id:0:24}"
 fi
-[ -n "$SOCKET_PATH" ] || SOCKET_PATH="$RUN_DIR/codex-app-server.$SERVER_KEY.sock"
-case "$SOCKET_PATH" in
-  /*) ;;
-  *) SOCKET_PATH="$PROJECT/$SOCKET_PATH" ;;
-esac
-SOCKET_URL="unix://$SOCKET_PATH"
 SERVER_LOG="$RUN_DIR/codex-app-server.$SERVER_KEY.log"
 SERVER_PID="$RUN_DIR/codex-app-server.$SERVER_KEY.pid"
-
-mkdir -p "$RUN_DIR" "$(dirname "$SOCKET_PATH")"
+mkdir -p "$RUN_DIR"
 
 # Export the bridge environment BEFORE the app-server is launched below: the
 # app-server is the parent of the SessionStart hooks, so the hooks only inherit
-# AGMSG_CODEX_BRIDGE_LAUNCHER / _APP_SERVER (and, on a per-identity server,
-# AGMSG_CODEX_NAME) when they are already exported at launch time.
+# these when they are already exported at launch time. AGMSG_CODEX_SERVER_KEY
+# lets session-start.sh / codex-bridge-launcher.sh agree on the request-file key
+# without parsing it back out of the endpoint string — a ws:// endpoint has no
+# ".sock" filename to key on, and its ":" is not a legal Windows filename char.
 export AGMSG_CODEX_BRIDGE=1
-export AGMSG_CODEX_BRIDGE_APP_SERVER="$SOCKET_URL"
 export AGMSG_CODEX_BRIDGE_LAUNCHER=1
+export AGMSG_CODEX_SERVER_KEY="$SERVER_KEY"
 
-if [ ! -S "$SOCKET_PATH" ]; then
-  "$REAL_CODEX" app-server --listen "$SOCKET_URL" >>"$SERVER_LOG" 2>&1 &
-  echo "$!" > "$SERVER_PID"
-  for _ in $(seq 1 50); do
-    [ -S "$SOCKET_PATH" ] && break
-    sleep 0.1
-  done
-fi
+# Pick the app-server transport. Codex's app-server speaks WebSocket over either
+# a unix-domain socket (unix://PATH) or TCP (ws://HOST:PORT). On native Windows
+# (Git Bash/MSYS) the unix path does not work: codex.exe cannot bind the MSYS
+# "/c/..." path, Git Bash's `-S` does not see a Windows AF_UNIX file as a socket,
+# and Node's net.createConnection treats a path as a named pipe. ws://127.0.0.1
+# over TCP loopback sidesteps all three. macOS/Linux keep the unix socket.
+# Override for tests with AGMSG_CODEX_TRANSPORT=ws|unix.
+case "${AGMSG_CODEX_TRANSPORT:-}" in
+  ws|unix) _transport="$AGMSG_CODEX_TRANSPORT" ;;
+  *)
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+      MINGW*|MSYS*|CYGWIN*) _transport=ws ;;
+      *) _transport=unix ;;
+    esac
+    ;;
+esac
 
-if [ ! -S "$SOCKET_PATH" ]; then
-  echo "codex-monitor: app-server socket did not appear: $SOCKET_PATH" >&2
-  echo "codex-monitor: see $SERVER_LOG" >&2
-  exit 1
+if [ "$_transport" = ws ]; then
+  # TCP loopback. codex binds an ephemeral port (ws://127.0.0.1:0) and prints the
+  # chosen port; we record it in a .port file so a later session for the same key
+  # can reuse the running server, and so the in-sandbox SessionStart hook can
+  # recover the endpoint (it does not inherit _APP_SERVER — the port is only known
+  # after launch).
+  PORT_FILE="$RUN_DIR/codex-app-server.$SERVER_KEY.port"
+  _ready() {
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsS -o /dev/null "http://127.0.0.1:$1/readyz" 2>/dev/null
+    else
+      return 0
+    fi
+  }
+  PORT=""
+  if [ -f "$SERVER_PID" ] && [ -f "$PORT_FILE" ]; then
+    _spid="$(cat "$SERVER_PID" 2>/dev/null || true)"
+    _sport="$(cat "$PORT_FILE" 2>/dev/null || true)"
+    if [ -n "$_spid" ] && [ -n "$_sport" ] && kill -0 "$_spid" 2>/dev/null && _ready "$_sport"; then
+      PORT="$_sport"
+    fi
+  fi
+  if [ -z "$PORT" ]; then
+    : > "$SERVER_LOG"
+    "$REAL_CODEX" app-server --listen "ws://127.0.0.1:0" >>"$SERVER_LOG" 2>&1 &
+    echo "$!" > "$SERVER_PID"
+    for _ in $(seq 1 100); do
+      PORT="$(sed -n 's#.*listening on: ws://127\.0\.0\.1:\([0-9][0-9]*\).*#\1#p' "$SERVER_LOG" 2>/dev/null | head -1)"
+      [ -n "$PORT" ] && break
+      sleep 0.1
+    done
+    if [ -z "$PORT" ]; then
+      echo "codex-monitor: app-server did not report a listening port" >&2
+      echo "codex-monitor: see $SERVER_LOG" >&2
+      exit 1
+    fi
+    printf '%s\n' "$PORT" > "$PORT_FILE"
+    for _ in $(seq 1 50); do _ready "$PORT" && break; sleep 0.1; done
+  fi
+  SOCKET_URL="ws://127.0.0.1:$PORT"
+  export AGMSG_CODEX_BRIDGE_APP_SERVER="$SOCKET_URL"
+else
+  [ -n "$SOCKET_PATH" ] || SOCKET_PATH="$RUN_DIR/codex-app-server.$SERVER_KEY.sock"
+  case "$SOCKET_PATH" in
+    /*) ;;
+    *) SOCKET_PATH="$PROJECT/$SOCKET_PATH" ;;
+  esac
+  SOCKET_URL="unix://$SOCKET_PATH"
+  export AGMSG_CODEX_BRIDGE_APP_SERVER="$SOCKET_URL"
+  mkdir -p "$(dirname "$SOCKET_PATH")"
+
+  if [ ! -S "$SOCKET_PATH" ]; then
+    "$REAL_CODEX" app-server --listen "$SOCKET_URL" >>"$SERVER_LOG" 2>&1 &
+    echo "$!" > "$SERVER_PID"
+    for _ in $(seq 1 50); do
+      [ -S "$SOCKET_PATH" ] && break
+      sleep 0.1
+    done
+  fi
+
+  if [ ! -S "$SOCKET_PATH" ]; then
+    echo "codex-monitor: app-server socket did not appear: $SOCKET_PATH" >&2
+    echo "codex-monitor: see $SERVER_LOG" >&2
+    exit 1
+  fi
 fi
 
 "$SCRIPT_DIR/delivery.sh" set monitor codex "$PROJECT" >/dev/null

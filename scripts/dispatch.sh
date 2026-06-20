@@ -3,8 +3,8 @@ set -euo pipefail
 
 # User-facing agmsg command dispatcher.
 #
-# This script keeps command semantics on the Bash side. Native Windows
-# launchers should do only platform setup, then delegate here.
+# This script keeps command semantics on the Bash side. Windows callers should
+# invoke it through Git Bash.
 #
 # Usage:
 #   dispatch.sh [--type <agent_type>] [--project <path>] [--team <team>] [--agent <agent>] [--argv-file <path>] [--] [command ...]
@@ -27,7 +27,7 @@ commands:
   history [agent] [limit]
   team [team]
   config [show|set ...]
-  mode [turn|off]
+  mode [monitor|turn|off]
   join <team> <agent>
   reset [agent]
   actas <agent>
@@ -50,7 +50,7 @@ done
 
 if [ -n "$ARGV_FILE" ]; then
   if ! command -v base64 >/dev/null 2>&1; then
-    echo "base64 is required to decode PowerShell argv handoff." >&2
+    echo "base64 is required to decode argv-file handoff." >&2
     exit 127
   fi
   decoded_args=()
@@ -104,9 +104,9 @@ show_identity_guidance() {
   printf '%s\n\n' "$whoami_output" >&2
   cat >&2 <<'EOF'
 Resolve the identity explicitly, for example:
-  agmsg join <team> <agent>
-  agmsg -Team <team> -Agent <agent> inbox
-  $env:AGMSG_TEAM = "<team>"; $env:AGMSG_AGENT = "<agent>"; agmsg inbox
+  scripts/join.sh <team> <agent> <type> <project>
+  AGMSG_TEAM=<team> AGMSG_AGENT=<agent> scripts/dispatch.sh inbox
+  export AGMSG_TEAM=<team>; export AGMSG_AGENT=<agent>
 EOF
 }
 
@@ -211,10 +211,6 @@ case "$COMMAND" in
         run_script delivery.sh status "$AGENT_TYPE" "$PROJECT"
         ;;
       1)
-        if [ "$AGENT_TYPE" = "codex" ] && { [ "$1" = "monitor" ] || [ "$1" = "both" ]; }; then
-          echo "Codex has no Monitor tool; only 'turn' or 'off' modes are supported." >&2
-          exit 2
-        fi
         run_script delivery.sh set "$1" "$AGENT_TYPE" "$PROJECT"
         ;;
       *)
@@ -262,8 +258,19 @@ case "$COMMAND" in
     if [ "$found" -eq 0 ]; then
       run_script join.sh "$team_name" "$name" "$AGENT_TYPE" "$PROJECT"
     fi
-    echo "To act as '$name' in this PowerShell session, run:"
-    echo "  \$env:AGMSG_TEAM = '$team_name'; \$env:AGMSG_AGENT = '$name'"
+    echo "To act as '$name' for sends in this shell, run:"
+    echo "  export AGMSG_TEAM='$team_name'; export AGMSG_AGENT='$name'"
+    if [ "$AGENT_TYPE" = "codex" ]; then
+      set +e
+      engage_output="$(run_script codex-actas-engage.sh "$PROJECT" "$name" 2>&1)"
+      engage_code=$?
+      set -e
+      [ -n "$engage_output" ] && printf '%s\n' "$engage_output"
+      case "$engage_code" in
+        0|2|3|4) ;;
+        *) exit "$engage_code" ;;
+      esac
+    fi
     ;;
 
   *)

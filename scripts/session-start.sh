@@ -87,6 +87,17 @@ if [ "$TYPE" = "codex" ]; then
   thread_id="$(agmsg_resolve_codex_thread "$PROJECT")"
   [ -n "$thread_id" ] || exit 0
   app_server="${AGMSG_CODEX_BRIDGE_APP_SERVER:-}"
+  # ws transport (native Windows): the app-server's TCP port is only known after
+  # launch, so this in-sandbox hook does not inherit AGMSG_CODEX_BRIDGE_APP_SERVER.
+  # Recover the endpoint from the .port file codex-monitor.sh wrote, keyed by the
+  # SERVER_KEY the hook *does* inherit.
+  if [ -z "$app_server" ] && [ -n "${AGMSG_CODEX_SERVER_KEY:-}" ]; then
+    port_file="$RUN_DIR/codex-app-server.$AGMSG_CODEX_SERVER_KEY.port"
+    if [ -f "$port_file" ]; then
+      bridge_port=$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)
+      [ -n "$bridge_port" ] && app_server="ws://127.0.0.1:$bridge_port"
+    fi
+  fi
   if [ -z "$app_server" ]; then
     agent_pid=$(agmsg_agent_pid "$TYPE" 2>/dev/null || true)
     if [ -n "$agent_pid" ]; then
@@ -149,7 +160,14 @@ if [ "$TYPE" = "codex" ]; then
     # project-wide request file would let them clobber / cross-read each other.
     # The shared single-identity socket's key IS the project hash, so unchanged
     # there.
-    server_key="${app_server##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+    # Prefer the key codex-monitor.sh exported; fall back to deriving it from the
+    # endpoint filename (unix:// ".sock") for back-compat. A ws:// endpoint has no
+    # ".sock" to parse and its ":" is not a legal filename char, so the explicit
+    # key is required there.
+    server_key="${AGMSG_CODEX_SERVER_KEY:-}"
+    if [ -z "$server_key" ]; then
+      server_key="${app_server##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+    fi
     [ -n "$server_key" ] || server_key="$project_hash"
     request_file="$RUN_DIR/codex-bridge-request.$server_key"
     tmp_request="$request_file.$$"
