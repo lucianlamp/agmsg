@@ -106,11 +106,44 @@ function parseArgs(argv) {
   if (!fs.existsSync(opts.project) || !fs.statSync(opts.project).isDirectory()) {
     die(`project path is not a directory: ${opts.project}`);
   }
+  // Keep opts.project in Windows form for fs / codex.exe (cwd, workspace roots);
+  // the .sh helpers key projects by their bash-form path, so derive that too. On
+  // Windows the project arrives as a Windows path (MSYS rewrites /c|/tmp argv to
+  // C:\... when invoking node.exe). Off Windows projectBash == project.
+  opts.projectBash = toBashPath(opts.project);
   return opts;
 }
 
+// On native Windows a bare ".sh" path cannot be executed directly: Node's
+// spawnSync (and codex's app-server process/spawn) fail with EFTYPE. Run the
+// script through Git Bash there; elsewhere the "#!/usr/bin/env bash" shebang
+// handles it and the path is used unchanged. The bash lookup mirrors
+// delivery.sh's windows_wrap(): GIT_BASH / AGMSG_BASH overrides, then the
+// default Git for Windows install path. Returns a flat argv array.
+function shCommand(scriptPath, args) {
+  if (process.platform === "win32") {
+    const bash =
+      process.env.GIT_BASH || process.env.AGMSG_BASH || "C:/Program Files/Git/bin/bash.exe";
+    return [bash, scriptPath.replace(/\\/g, "/"), ...args];
+  }
+  return [scriptPath, ...args];
+}
+
+// Convert a Windows path to its Git Bash form (/c/..., /tmp/...) via cygpath, so
+// it matches how the .sh helpers key a project. cygpath knows the MSYS mount
+// table (including /tmp), so the round-trip matches what join.sh/whoami.sh
+// recorded. Off Windows the path is already bash-form. Falls back to a
+// drive-letter rewrite if cygpath is somehow unavailable.
+function toBashPath(p) {
+  if (process.platform !== "win32") return p;
+  const r = spawnSync("cygpath", ["-u", p], { encoding: "utf8" });
+  if (!r.error && r.status === 0 && r.stdout) return r.stdout.trim();
+  return p.replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`).replace(/\\/g, "/");
+}
+
 function runScript(script, args) {
-  const result = spawnSync(path.join(SCRIPT_DIR, script), args, {
+  const [cmd, ...argv] = shCommand(path.join(SCRIPT_DIR, script), args);
+  const result = spawnSync(cmd, argv, {
     cwd: SKILL_DIR,
     encoding: "utf8",
   });
@@ -119,7 +152,7 @@ function runScript(script, args) {
 }
 
 function resolveIdentity(opts) {
-  const result = runScript("identities.sh", [opts.project, opts.type]);
+  const result = runScript("identities.sh", [opts.projectBash, opts.type]);
   if (result.status !== 0) {
     die(`identity resolution failed: ${(result.stderr || result.stdout).trim()}`);
   }
@@ -247,9 +280,14 @@ class AppServerClient {
   }
 }
 
-class UnixWebSocketAppServerClient {
-  constructor(socketPath) {
-    this.socketPath = socketPath;
+class WebSocketAppServerClient {
+  // connectTarget is either a unix-domain socket path (string) or a TCP
+  // descriptor ({ host, port }); net.createConnection accepts both forms. The
+  // WebSocket framing above the socket is identical for both. hostHeader is the
+  // value sent in the upgrade request's Host: line.
+  constructor(connectTarget, hostHeader = "localhost") {
+    this.connectTarget = connectTarget;
+    this.hostHeader = hostHeader;
     this.nextId = 1;
     this.pending = new Map();
     this.handlers = new Map();
@@ -269,12 +307,12 @@ class UnixWebSocketAppServerClient {
         .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
         .digest("base64");
 
-      this.socket = net.createConnection(this.socketPath);
+      this.socket = net.createConnection(this.connectTarget);
       this.socket.on("connect", () => {
         this.socket.write(
           [
             "GET / HTTP/1.1",
-            "Host: localhost",
+            `Host: ${this.hostHeader}`,
             "Upgrade: websocket",
             "Connection: Upgrade",
             `Sec-WebSocket-Key: ${key}`,
@@ -521,6 +559,7 @@ class CodexBridge {
     await this.client.ready?.();
     await this.initialize();
     await this.ensureThread();
+    this.writeMeta();
     await this.armWatch();
   }
 
@@ -534,6 +573,7 @@ class CodexBridge {
         `team=${this.identity.team}`,
         `name=${this.identity.name}`,
         `type=${this.opts.type}`,
+        `thread=${this.threadId || ""}`,
       ].join("\n") + "\n",
     );
   }
@@ -597,9 +637,8 @@ class CodexBridge {
     if (this.stopping || this.watchHandle) return;
     const handle = `agmsg-watch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.watchHandle = handle;
-    const command = [
-      path.join(SCRIPT_DIR, "watch-once.sh"),
-      this.opts.project,
+    const command = shCommand(path.join(SCRIPT_DIR, "watch-once.sh"), [
+      this.opts.projectBash,
       this.opts.type,
       "--team",
       this.identity.team,
@@ -609,7 +648,7 @@ class CodexBridge {
       String(this.opts.timeout),
       "--interval",
       String(this.opts.interval),
-    ];
+    ]);
     await this.client.request("process/spawn", {
       command,
       processHandle: handle,
@@ -792,7 +831,8 @@ class CodexBridge {
   }
 
   readInboxForPrompt() {
-    const result = spawnSync(path.join(SCRIPT_DIR, "inbox.sh"), [this.identity.team, this.identity.name], {
+    const [cmd, ...argv] = shCommand(path.join(SCRIPT_DIR, "inbox.sh"), [this.identity.team, this.identity.name]);
+    const result = spawnSync(cmd, argv, {
       cwd: this.opts.project,
       encoding: "utf8",
     });
@@ -896,10 +936,10 @@ function appServerCommand(opts = {}) {
     if (opts.appServer === "stdio://" || opts.appServer === "stdio") {
       return ["codex", "app-server", "--listen", "stdio://"];
     }
-    if (opts.appServer.startsWith("unix://")) {
-      die("--app-server unix:// is handled by the direct WebSocket client");
+    if (opts.appServer.startsWith("unix://") || opts.appServer.startsWith("ws://")) {
+      die("--app-server unix://|ws:// is handled by the direct WebSocket client");
     }
-    die("--app-server currently supports only unix://PATH");
+    die("--app-server currently supports unix://PATH or ws://HOST:PORT");
   }
   if (process.env.AGMSG_CODEX_APP_SERVER_CMD) {
     return ["/bin/sh", "-lc", process.env.AGMSG_CODEX_APP_SERVER_CMD];
@@ -912,7 +952,21 @@ function createAppServerClient(opts) {
     const rawSocketPath = opts.appServer.slice("unix://".length);
     if (!rawSocketPath) die("--app-server unix:// requires a socket path");
     const socketPath = path.isAbsolute(rawSocketPath) ? rawSocketPath : path.resolve(process.cwd(), rawSocketPath);
-    return new UnixWebSocketAppServerClient(socketPath);
+    return new WebSocketAppServerClient(socketPath, "localhost");
+  }
+  if (opts.appServer && opts.appServer.startsWith("ws://")) {
+    // WebSocket over TCP loopback (used on native Windows, where unix-domain
+    // sockets do not survive the MSYS path / AF_UNIX / Node named-pipe mismatch).
+    // Framing is identical to the unix path; only the connection target differs.
+    let u;
+    try {
+      u = new URL(opts.appServer);
+    } catch (_e) {
+      die(`--app-server ws:// is not a valid URL: ${opts.appServer}`);
+    }
+    const port = Number(u.port);
+    if (!u.hostname || !port) die("--app-server ws:// requires ws://HOST:PORT");
+    return new WebSocketAppServerClient({ host: u.hostname, port }, u.host);
   }
   return new AppServerClient(appServerCommand(opts), opts.project);
 }

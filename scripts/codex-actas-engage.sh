@@ -30,6 +30,8 @@ NAME="${2:?Missing name}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_DIR="$SKILL_DIR/run"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/actas-lock.sh"
 PROJECT="$(cd "$PROJECT" && pwd)"
 PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
 
@@ -64,28 +66,120 @@ TEAM=$(printf '%s\n' "$PAIRS" | awk -v n="$NAME" 'NF >= 2 && $2 == n { print $1;
 [ -n "$TEAM" ] || { echo "status=not_registered name=$NAME"; exit 2; }
 
 # --- Resolve the app-server this session is attached to. Prefer the bridge env
-# (set when launched through codex-monitor.sh), else the project-wide socket. ---
+# (set when launched through codex-monitor.sh), then recover the native Windows
+# ws:// endpoint from the .port file that codex-monitor.sh wrote. ---
+SERVER_KEY="${AGMSG_CODEX_SERVER_KEY:-}"
+if [ -z "$SERVER_KEY" ] && [ -n "${AGMSG_CODEX_NAME:-}" ]; then
+  _id=$(printf '%s' "$AGMSG_CODEX_NAME" | tr -c 'A-Za-z0-9._-' '_')
+  SERVER_KEY="${PROJECT_HASH:0:12}.${_id:0:24}"
+fi
+
 APP_SERVER="${AGMSG_CODEX_BRIDGE_APP_SERVER:-}"
 if [ -z "$APP_SERVER" ]; then
+  if [ -n "$SERVER_KEY" ] && [ -f "$RUN_DIR/codex-app-server.$SERVER_KEY.port" ]; then
+    bridge_port=$(tr -d '[:space:]' < "$RUN_DIR/codex-app-server.$SERVER_KEY.port" 2>/dev/null || true)
+    [ -n "$bridge_port" ] && APP_SERVER="ws://127.0.0.1:$bridge_port"
+  fi
+fi
+if [ -z "$APP_SERVER" ] && [ -f "$RUN_DIR/codex-app-server.$PROJECT_HASH.port" ]; then
+  bridge_port=$(tr -d '[:space:]' < "$RUN_DIR/codex-app-server.$PROJECT_HASH.port" 2>/dev/null || true)
+  if [ -n "$bridge_port" ]; then
+    APP_SERVER="ws://127.0.0.1:$bridge_port"
+    [ -n "$SERVER_KEY" ] || SERVER_KEY="$PROJECT_HASH"
+  fi
+fi
+if [ -z "$APP_SERVER" ]; then
   sock="$RUN_DIR/codex-app-server.$PROJECT_HASH.sock"
-  [ -S "$sock" ] && APP_SERVER="unix://$sock"
+  if [ -S "$sock" ]; then
+    APP_SERVER="unix://$sock"
+    [ -n "$SERVER_KEY" ] || SERVER_KEY="$PROJECT_HASH"
+  fi
 fi
 [ -n "$APP_SERVER" ] || { echo "status=no_app_server"; exit 4; }
 
-bridge_alive() { # <pidfile> -> echoes live pid or empty
+meta_value() { # <key> <file>
+  awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$2" 2>/dev/null
+}
+
+pid_is_alive() { # <pid>
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null && return 0
+  if command -v tasklist >/dev/null 2>&1; then
+    tasklist //FI "PID eq $pid" //NH 2>/dev/null \
+      | awk -v pid="$pid" '$2 == pid { found=1 } END { exit found ? 0 : 1 }' \
+      && return 0
+  fi
+  return 1
+}
+
+bridge_meta_is_for() { # <pidfile> <pid> <team> <name> <type>
+  local pidfile="$1" pid="$2" team="$3" name="$4" type="$5" meta meta_pid meta_team meta_name meta_type
+  meta="${pidfile%.pid}.meta"
+  [ -f "$meta" ] || return 1
+  meta_pid="$(meta_value pid "$meta")"
+  meta_team="$(meta_value team "$meta")"
+  meta_name="$(meta_value name "$meta")"
+  meta_type="$(meta_value type "$meta")"
+  [ "$meta_pid" = "$pid" ] || return 1
+  [ "$meta_team" = "$team" ] || return 1
+  [ "$meta_name" = "$name" ] || return 1
+  [ -z "$type" ] || [ -z "$meta_type" ] || [ "$meta_type" = "$type" ] || return 1
+  return 0
+}
+
+bridge_alive_for() { # <pidfile> <team> <name> <type> -> echoes live matching pid or empty
+  local pf="$1" team="$2" name="$3" type="$4" p args
+  [ -f "$pf" ] || return 0
+  p=$(cat "$pf" 2>/dev/null || true)
+  [ -n "$p" ] || return 0
+  pid_is_alive "$p" || return 0
+  args="$(ps -o args= -p "$p" 2>/dev/null || true)"
+  if _args_is_bridge_for "$args" "$team" "$name"; then
+    printf '%s' "$p"
+    return 0
+  fi
+  if [ -z "$args" ] && bridge_meta_is_for "$pf" "$p" "$team" "$name" "$type"; then
+    printf '%s' "$p"
+  fi
+}
+
+bridge_live_pid() { # <pidfile> -> echoes live pid or empty
   local pf="$1" p
   [ -f "$pf" ] || return 0
   p=$(cat "$pf" 2>/dev/null || true)
-  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && printf '%s' "$p"
+  [ -n "$p" ] && pid_is_alive "$p" && printf '%s' "$p"
+}
+
+bridge_thread() { # <pidfile> <pid> -> echoes thread id if known
+  local pf="$1" p="$2" t
+  t=$(ps -o args= -p "$p" 2>/dev/null | sed -n 's/.*--thread \([0-9A-Za-z._:-][0-9A-Za-z._:-]*\).*/\1/p' | head -1)
+  if [ -z "$t" ] && [ -f "${pf%.pid}.meta" ]; then
+    t="$(meta_value thread "${pf%.pid}.meta")"
+  fi
+  printf '%s' "$t"
+}
+
+stop_bridge_pid() { # <pid>
+  local p="$1"
+  kill "$p" 2>/dev/null && return 0
+  if command -v taskkill >/dev/null 2>&1; then
+    taskkill //PID "$p" //F >/dev/null 2>&1 && return 0
+  fi
+  return 1
 }
 
 # --- Exclusivity: refuse if <name> is already armed by a live bridge on a
 # DIFFERENT thread (another session owns this identity). ---
-name_pid=$(bridge_alive "$RUN_DIR/codex-bridge.$TEAM.$NAME.pid")
+target_pidfile="$RUN_DIR/codex-bridge.$TEAM.$NAME.pid"
+name_pid=$(bridge_alive_for "$target_pidfile" "$TEAM" "$NAME" codex)
 if [ -n "$name_pid" ]; then
-  cur_thread=$(ps -o args= -p "$name_pid" 2>/dev/null | sed -n 's/.*--thread \([0-9a-f-][0-9a-f-]*\).*/\1/p')
+  cur_thread=$(bridge_thread "$target_pidfile" "$name_pid")
   if [ -n "$cur_thread" ] && [ "$cur_thread" != "$THREAD" ]; then
     echo "status=held name=$NAME owner_thread=$cur_thread owner_pid=$name_pid"
+    exit 3
+  fi
+  if [ -z "$cur_thread" ]; then
+    echo "status=held name=$NAME owner_thread=unknown owner_pid=$name_pid"
     exit 3
   fi
   # Same thread already armed for this name → nothing to do.
@@ -97,11 +191,11 @@ fi
 # different name, retire it so the thread receives as <name> only. ---
 for pf in "$RUN_DIR"/codex-bridge.*.pid; do
   [ -f "$pf" ] || continue
-  p=$(bridge_alive "$pf"); [ -n "$p" ] || continue
-  t=$(ps -o args= -p "$p" 2>/dev/null | sed -n 's/.*--thread \([0-9a-f-][0-9a-f-]*\).*/\1/p')
+  p=$(bridge_live_pid "$pf"); [ -n "$p" ] || continue
+  t=$(bridge_thread "$pf" "$p")
   if [ "$t" = "$THREAD" ]; then
-    kill "$p" 2>/dev/null || true
-    rm -f "$pf"
+    stop_bridge_pid "$p" || true
+    rm -f "$pf" "${pf%.pid}.meta"
   fi
 done
 
@@ -117,10 +211,34 @@ marker="$RUN_DIR/codex-name.$PROJECT_HASH.$THREAD"
 tmp_marker="$marker.$$"
 printf '%s\n' "$NAME" > "$tmp_marker" && mv "$tmp_marker" "$marker"
 
-# Same server_key derivation as session-start.sh / codex-bridge-launcher.sh.
-server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
-[ -n "$server_key" ] || server_key="$PROJECT_HASH"
-request_file="$RUN_DIR/codex-bridge-request.$server_key"
+# Same server key derivation as session-start.sh / codex-bridge-launcher.sh.
+# For ws:// endpoints the filename-safe key must come from codex-monitor.sh
+# (or from the .port file we resolved above); parsing host:port would produce a
+# different request file from the one the launcher watches on Windows.
+if [ -z "$SERVER_KEY" ]; then
+  case "$APP_SERVER" in
+    unix://*)
+      SERVER_KEY="${APP_SERVER##*/}"
+      SERVER_KEY="${SERVER_KEY#codex-app-server.}"
+      SERVER_KEY="${SERVER_KEY%.sock}"
+      ;;
+    ws://*)
+      bridge_port=$(printf '%s\n' "$APP_SERVER" | sed -n 's#^ws://[^:][^:]*:\([0-9][0-9]*\).*$#\1#p')
+      if [ -n "$bridge_port" ]; then
+        for port_file in "$RUN_DIR"/codex-app-server.*.port; do
+          [ -f "$port_file" ] || continue
+          if [ "$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)" = "$bridge_port" ]; then
+            SERVER_KEY="${port_file##*/codex-app-server.}"
+            SERVER_KEY="${SERVER_KEY%.port}"
+            break
+          fi
+        done
+      fi
+      ;;
+  esac
+fi
+[ -n "$SERVER_KEY" ] || SERVER_KEY="$PROJECT_HASH"
+request_file="$RUN_DIR/codex-bridge-request.$SERVER_KEY"
 tmp_request="$request_file.$$"
 printf '%s\t%s\t%s\t%s\t%s\n' codex "$TEAM" "$NAME" "$THREAD" "$APP_SERVER" > "$tmp_request"
 mv "$tmp_request" "$request_file"

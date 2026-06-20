@@ -120,6 +120,10 @@ is_windows_host() {
   esac
 }
 
+remove_legacy_script_copies() {
+  rm -f "$SKILL_DIR/scripts/dispatch.sh"
+}
+
 install_windows_helpers() {
   if ! is_windows_host; then
     return 0
@@ -241,6 +245,7 @@ if [ "$UPDATE_ONLY" = true ]; then
   sed "s/__SKILL_NAME__/$SKILL_NAME/g" "$SCRIPT_DIR/templates/$SKILL_TEMPLATE" > "$SKILL_DIR/SKILL.md"
   # Recursive copy so nested helper dirs (scripts/lib/) ship without enumerating files.
   cp -R "$SCRIPT_DIR/scripts/." "$SKILL_DIR/scripts/"
+  remove_legacy_script_copies
   for tmpl in "$SCRIPT_DIR/templates/"cmd.*.md; do
     sed "s/__SKILL_NAME__/$SKILL_NAME/g" "$tmpl" > "$SKILL_DIR/templates/$(basename "$tmpl")"
   done
@@ -311,6 +316,7 @@ fi
 sed "s/__SKILL_NAME__/$CMD_NAME/g" "$SCRIPT_DIR/templates/$SKILL_TEMPLATE" > "$SKILL_DIR/SKILL.md"
 # Recursive copy so nested helper dirs (scripts/lib/) ship without enumerating files.
 cp -R "$SCRIPT_DIR/scripts/." "$SKILL_DIR/scripts/"
+remove_legacy_script_copies
 
 # Replace placeholder in templates with actual skill name
 for tmpl in "$SCRIPT_DIR/templates/"cmd.*.md; do

@@ -21,7 +21,30 @@ PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
 # own launcher inbox; the shared single-identity socket's key is the project
 # hash, so this is unchanged for the common case. Must match the writer key in
 # session-start.sh.
-server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+# Prefer the key codex-monitor.sh exported (AGMSG_CODEX_SERVER_KEY); fall back to
+# deriving it from the endpoint filename (unix:// ".sock") or the recorded
+# native-Windows TCP port file.
+server_key="${AGMSG_CODEX_SERVER_KEY:-}"
+if [ -z "$server_key" ]; then
+  case "$APP_SERVER" in
+    unix://*)
+      server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+      ;;
+    ws://*)
+      bridge_port=$(printf '%s\n' "$APP_SERVER" | sed -n 's#^ws://[^:][^:]*:\([0-9][0-9]*\).*$#\1#p')
+      if [ -n "$bridge_port" ]; then
+        for port_file in "$RUN_DIR"/codex-app-server.*.port; do
+          [ -f "$port_file" ] || continue
+          if [ "$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)" = "$bridge_port" ]; then
+            server_key="${port_file##*/codex-app-server.}"
+            server_key="${server_key%.port}"
+            break
+          fi
+        done
+      fi
+      ;;
+  esac
+fi
 [ -n "$server_key" ] || server_key="$PROJECT_HASH"
 REQUEST_FILE="$RUN_DIR/codex-bridge-request.$server_key"
 
@@ -31,6 +54,53 @@ mkdir -p "$RUN_DIR"
 # already live, or a fresh bridge confirmed up). A spawn that never comes up must
 # stay retriable on the same request, so we do NOT mark it done up front.
 last_request=""
+
+meta_value() { # <key> <file>
+  awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$2" 2>/dev/null
+}
+
+bridge_meta_is_for() { # <pidfile> <pid> <team> <name> <type>
+  local pidfile="$1" pid="$2" team="$3" name="$4" type="$5" meta meta_pid meta_team meta_name meta_type
+  meta="${pidfile%.pid}.meta"
+  [ -f "$meta" ] || return 1
+  meta_pid="$(meta_value pid "$meta")"
+  meta_team="$(meta_value team "$meta")"
+  meta_name="$(meta_value name "$meta")"
+  meta_type="$(meta_value type "$meta")"
+  [ "$meta_pid" = "$pid" ] || return 1
+  [ "$meta_team" = "$team" ] || return 1
+  [ "$meta_name" = "$name" ] || return 1
+  [ -z "$type" ] || [ -z "$meta_type" ] || [ "$meta_type" = "$type" ] || return 1
+  return 0
+}
+
+pid_is_alive() { # <pid>
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null && return 0
+  if command -v tasklist >/dev/null 2>&1; then
+    tasklist //FI "PID eq $pid" //NH 2>/dev/null \
+      | awk -v pid="$pid" '$2 == pid { found=1 } END { exit found ? 0 : 1 }' \
+      && return 0
+  fi
+  return 1
+}
+
+bridge_process_is_for() { # <pidfile> <team> <name> <type>
+  local pidfile="$1" team="$2" name="$3" type="$4" bridge_pid args
+  [ -f "$pidfile" ] || return 1
+  bridge_pid="$(cat "$pidfile" 2>/dev/null || true)"
+  [ -n "$bridge_pid" ] || return 1
+  pid_is_alive "$bridge_pid" || return 1
+  args="$(ps -o args= -p "$bridge_pid" 2>/dev/null || true)"
+  if _args_is_bridge_for "$args" "$team" "$name"; then
+    return 0
+  fi
+  # Native Windows fallback: the bridge writes a real Windows node.exe PID, but
+  # Git Bash/MSYS ps can fail to return argv for that native process. In that
+  # case, accept the bridge-owned meta file as the identity proof.
+  [ -z "$args" ] && bridge_meta_is_for "$pidfile" "$bridge_pid" "$team" "$name" "$type"
+}
+
 while kill -0 "$PARENT_PID" 2>/dev/null; do
   if [ -f "$REQUEST_FILE" ]; then
     request="$(cat "$REQUEST_FILE" 2>/dev/null || true)"
@@ -44,18 +114,16 @@ EOF
         last_request="$request"   # malformed request — don't reprocess
       else
         pidfile="$RUN_DIR/codex-bridge.$team.$name.pid"
+        if bridge_process_is_for "$pidfile" "$team" "$name" "$req_type"; then
+          last_request="$request"   # our bridge for this identity is already live
+          sleep 0.2
+          continue
+        fi
         if [ -f "$pidfile" ]; then
-          bridge_pid="$(cat "$pidfile" 2>/dev/null || true)"
-          if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null \
-              && _args_is_bridge_for "$(ps -o args= -p "$bridge_pid" 2>/dev/null || true)" "$team" "$name"; then
-            last_request="$request"   # our bridge for this identity is already live
-            sleep 0.2
-            continue
-          fi
           # Stale pidfile: dead, PID-reused by an unrelated process, OR pointing
           # at a DIFFERENT identity's bridge. A bare kill -0 would skip this
           # request forever. Drop it and (re)arm.
-          rm -f "$pidfile"
+          rm -f "$pidfile" "${pidfile%.pid}.meta"
         fi
         # No live bridge for this identity → about to (re)arm. A respawn leaves
         # the prior session's actas lock behind, anchored to the shared,
@@ -80,13 +148,9 @@ EOF
         # up (and is our bridge) before committing last_request; a failed launch
         # then stays retriable on the same request.
         for _ in $(seq 1 25); do
-          if [ -f "$pidfile" ]; then
-            bridge_pid="$(cat "$pidfile" 2>/dev/null || true)"
-            if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null \
-                && _args_is_bridge_for "$(ps -o args= -p "$bridge_pid" 2>/dev/null || true)" "$team" "$name"; then
-              last_request="$request"
-              break
-            fi
+          if bridge_process_is_for "$pidfile" "$team" "$name" "$req_type"; then
+            last_request="$request"
+            break
           fi
           sleep 0.1
         done

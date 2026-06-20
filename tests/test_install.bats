@@ -191,16 +191,15 @@ wait_for_pidfile_pid() {
   grep -q "whoami.sh \"\$(pwd)\" opencode" "$FAKE_HOME/.config/opencode/skills/agmsg/SKILL.md"
 }
 
-@test "install: no PowerShell launcher is shipped (dispatcher only)" {
+@test "install: no PowerShell launcher or dispatcher is shipped" {
   AGMSG_FORCE_WINDOWS=1 HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd msg
 
   [ ! -f "$FAKE_HOME/.agents/msg.ps1" ]
   [ ! -f "$FAKE_HOME/.agents/msg-run.sh" ]
   [ ! -f "$FAKE_HOME/.agents/bin/sqlite3" ]
-  # The PowerShell port was removed; only the Bash dispatcher ships.
   [ ! -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/agmsg.ps1" ]
   [ ! -f "$FAKE_HOME/.agents/skills/msg/scripts/windows/install-agmsg.ps1" ]
-  [ -f "$FAKE_HOME/.agents/skills/msg/scripts/dispatch.sh" ]
+  [ ! -f "$FAKE_HOME/.agents/skills/msg/scripts/dispatch.sh" ]
 }
 
 @test "install --update: removes legacy Windows runner and sqlite shim" {
@@ -228,14 +227,15 @@ PS1
   [ ! -f "$FAKE_HOME/.agents/agmsg-run.sh" ]
   [ ! -f "$FAKE_HOME/.agents/bin/sqlite3" ]
   [ ! -f "$FAKE_HOME/.agents/run/sqlite3-shim.cache" ]
+  [ ! -f "$FAKE_HOME/.agents/skills/agmsg/scripts/dispatch.sh" ]
 }
 
-@test "install: Windows dispatcher is shipped with the skill scripts" {
+@test "install: Windows legacy launchers are not shipped with the skill scripts" {
   AGMSG_FORCE_WINDOWS=1 HOME="$FAKE_HOME" bash "$REPO_ROOT/install.sh" --cmd agmsg
 
   [ ! -f "$SK/scripts/windows/agmsg.ps1" ]
   [ ! -f "$SK/scripts/windows/install-agmsg.ps1" ]
-  [ -f "$SK/scripts/dispatch.sh" ]
+  [ ! -f "$SK/scripts/dispatch.sh" ]
   [ ! -f "$SK/scripts/windows/agmsg-run.sh" ]
   [ ! -f "$SK/scripts/windows/sqlite3-shim.sh" ]
 }
@@ -457,4 +457,3 @@ with open(sys.argv[1], "rb") as f:
 PY
   fi
 }
-
