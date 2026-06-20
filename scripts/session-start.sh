@@ -161,12 +161,29 @@ if [ "$TYPE" = "codex" ]; then
     # The shared single-identity socket's key IS the project hash, so unchanged
     # there.
     # Prefer the key codex-monitor.sh exported; fall back to deriving it from the
-    # endpoint filename (unix:// ".sock") for back-compat. A ws:// endpoint has no
-    # ".sock" to parse and its ":" is not a legal filename char, so the explicit
-    # key is required there.
+    # endpoint filename (unix:// ".sock") or the recorded native-Windows TCP port
+    # file. That keeps writer and launcher on the same request file even if env
+    # propagation drops AGMSG_CODEX_SERVER_KEY.
     server_key="${AGMSG_CODEX_SERVER_KEY:-}"
     if [ -z "$server_key" ]; then
-      server_key="${app_server##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+      case "$app_server" in
+        unix://*)
+          server_key="${app_server##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+          ;;
+        ws://*)
+          bridge_port=$(printf '%s\n' "$app_server" | sed -n 's#^ws://[^:][^:]*:\([0-9][0-9]*\).*$#\1#p')
+          if [ -n "$bridge_port" ]; then
+            for port_file in "$RUN_DIR"/codex-app-server.*.port; do
+              [ -f "$port_file" ] || continue
+              if [ "$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)" = "$bridge_port" ]; then
+                server_key="${port_file##*/codex-app-server.}"
+                server_key="${server_key%.port}"
+                break
+              fi
+            done
+          fi
+          ;;
+      esac
     fi
     [ -n "$server_key" ] || server_key="$project_hash"
     request_file="$RUN_DIR/codex-bridge-request.$server_key"

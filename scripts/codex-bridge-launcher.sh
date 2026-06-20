@@ -22,11 +22,28 @@ PROJECT_HASH="$(printf '%s' "$PROJECT" | shasum | awk '{print $1}')"
 # hash, so this is unchanged for the common case. Must match the writer key in
 # session-start.sh.
 # Prefer the key codex-monitor.sh exported (AGMSG_CODEX_SERVER_KEY); fall back to
-# deriving it from the endpoint filename (unix:// ".sock") for back-compat. A
-# ws:// endpoint has no ".sock" to parse, so the explicit key is required there.
+# deriving it from the endpoint filename (unix:// ".sock") or the recorded
+# native-Windows TCP port file.
 server_key="${AGMSG_CODEX_SERVER_KEY:-}"
 if [ -z "$server_key" ]; then
-  server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+  case "$APP_SERVER" in
+    unix://*)
+      server_key="${APP_SERVER##*/}"; server_key="${server_key#codex-app-server.}"; server_key="${server_key%.sock}"
+      ;;
+    ws://*)
+      bridge_port=$(printf '%s\n' "$APP_SERVER" | sed -n 's#^ws://[^:][^:]*:\([0-9][0-9]*\).*$#\1#p')
+      if [ -n "$bridge_port" ]; then
+        for port_file in "$RUN_DIR"/codex-app-server.*.port; do
+          [ -f "$port_file" ] || continue
+          if [ "$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)" = "$bridge_port" ]; then
+            server_key="${port_file##*/codex-app-server.}"
+            server_key="${server_key%.port}"
+            break
+          fi
+        done
+      fi
+      ;;
+  esac
 fi
 [ -n "$server_key" ] || server_key="$PROJECT_HASH"
 REQUEST_FILE="$RUN_DIR/codex-bridge-request.$server_key"

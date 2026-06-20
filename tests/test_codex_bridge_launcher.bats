@@ -85,3 +85,49 @@ EOF
   [ -f "$LAUNCH_LOG" ]
   [ "$(wc -l < "$LAUNCH_LOG" | tr -d '[:space:]')" -eq 1 ]
 }
+
+@test "codex bridge launcher maps ws port back to project request key without env" {
+  local project_hash
+  project_hash="$(printf '%s' "$PROJ" | shasum | awk '{print $1}')"
+  printf '12345\n' > "$TEST_SKILL_DIR/run/codex-app-server.$project_hash.port"
+
+  local fake_bridge="$TEST_SKILL_DIR/fake-codex-bridge"
+  cat > "$fake_bridge" <<'EOF'
+#!/usr/bin/env bash
+team=""
+name=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --team) team="$2"; shift 2 ;;
+    --name) name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+run_dir="$TEST_SKILL_DIR/run"
+printf '%s %s/%s launch\n' "$$" "$team" "$name" >> "$LAUNCH_LOG"
+printf '%s\n' "$$" > "$run_dir/codex-bridge.$team.$name.pid"
+sleep 30
+EOF
+  chmod +x "$fake_bridge"
+
+  local request="$TEST_SKILL_DIR/run/codex-bridge-request.$project_hash"
+  printf 'codex\tteam\talice\tthread-1\tws://127.0.0.1:12345\n' > "$request"
+
+  sleep 30 &
+  local parent_pid="$!"
+
+  AGMSG_CODEX_BRIDGE_CMD="$fake_bridge" \
+    bash "$SCRIPTS/codex-bridge-launcher.sh" codex "$PROJ" ws://127.0.0.1:12345 "$parent_pid" &
+  local launcher_pid="$!"
+
+  for _ in {1..30}; do
+    [ -s "$LAUNCH_LOG" ] && break
+    sleep 0.1
+  done
+  kill "$launcher_pid" 2>/dev/null || true
+  kill "$parent_pid" 2>/dev/null || true
+  wait "$launcher_pid" 2>/dev/null || true
+
+  [ "$(wc -l < "$LAUNCH_LOG" | tr -d '[:space:]')" -eq 1 ]
+  [ "$(awk '{print $2}' "$LAUNCH_LOG")" = "team/alice" ]
+}
